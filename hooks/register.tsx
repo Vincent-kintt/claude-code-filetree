@@ -82,7 +82,7 @@ let generation = 0
 let lastPress = { key: '', at: 0 }
 let noNerd = false
 let glyphSetting = 'auto'
-let openWithSetting = ''
+let openWithSetting = 'preview'
 let previewed: { path: string; text: string; note: string } | null = null
 let previewRows = 20
 let followClaude = true
@@ -98,7 +98,6 @@ let activityId = 0
 let pointer = true
 let view = { from: 0, max: 0 }
 let nativeScroll = false
-let lastSurface = ''
 // The desktop page can press a Button with a handle from a drawing the engine has already
 // replaced, which no onPress answers; the latest drawing's actions are kept here by key instead.
 let routePress: (key: string) => (() => void) | undefined = () => undefined
@@ -986,13 +985,12 @@ function previewLines(text: string, top: number, rows: number, markdown: boolean
 }
 
 async function openFile($: EngineInterface, path: string, external = false): Promise<void> {
-  // The desktop app opens a file in the pane by default: its default app is an editor
-  // outside the conversation, and the pane's preview has a way back to the tree.
-  const setting = openWithSetting.trim()
-  if (!external && (setting === 'preview' || (!setting && lastSurface === 'desktop'))) return showPreview($, path)
+  // The setting always has a value: a blank one falls back to the default, preview.
+  const setting = openWithSetting.trim() || 'preview'
+  if (!external && setting === 'preview') return showPreview($, path)
   const os = await osName($)
   const native = (p: string) => (os === 'win32' ? p.replace(/\//g, '\\') : p)
-  const custom = external ? null : openWithCommand(openWithSetting, native(path), native(dirname(path)))
+  const custom = external || setting === 'app' ? null : openWithCommand(setting, native(path), native(dirname(path)))
   const { argv, init } = custom ? { argv: os === 'linux' ? ['sh', '-c', LINUX_LAUNCH, 'sh', ...custom] : custom, init: { timeoutMs: 10_000 } } : openCommand(os, path)
   try {
     const run = await $.process.run(argv, init)
@@ -1078,7 +1076,7 @@ export const register: Register = (on, options) => {
   showWrites = activity.includes('writes')
   followClaude = options?.follow !== 'off'
   sizeDefault = options?.column === 'size'
-  openWithSetting = typeof options?.open === 'string' ? options.open : ''
+  openWithSetting = typeof options?.open === 'string' ? options.open : 'preview'
   on('session.start', async ($, e, next) => {
     await $.command.register({ name: 'filetree', description: 'Show the file tree of the working directory' })
     const windows = (await $.env.get('OS')) === 'Windows_NT'
@@ -1197,7 +1195,6 @@ export const register: Register = (on, options) => {
   on('ui.message', async ($, e, next) => {
     if (e.requestId !== PANE || e.element !== 'rows' || !e.data || typeof e.data !== 'object') return next(e)
     const data = e.data as { press?: unknown; key?: unknown; ctrl?: unknown; shift?: unknown; scrollTo?: unknown; copy?: unknown }
-    lastSurface = e.surface
     void sync($)
     const t = await get($)
     if (typeof data.copy === 'string') {

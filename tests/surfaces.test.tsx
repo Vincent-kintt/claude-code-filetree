@@ -193,7 +193,7 @@ test('macOS outside a repo: write scan uses find -newer marker, not GNU -newermt
   expect(find).not.toContain('-newermt')
 })
 
-test('Windows: backslash paths shimmer, open hands the path to PowerShell as data, no find, sh or cmd', { timeoutMs: 20_000 }, async ($, on) => {
+test('Windows: backslash paths shimmer, open hands the path to PowerShell as data, no find, sh or cmd', { timeoutMs: 20_000, options: { open: 'app' } }, async ($, on) => {
   const ran: Ran = []
   const root = 'C:/Users/k/proj'
   const clock = world(on, {
@@ -222,7 +222,7 @@ test('Windows: backslash paths shimmer, open hands the path to PowerShell as dat
   await ui.unmount()
 })
 
-test('Linux unchanged: GNU find -newermt outside a repo, xdg-open detached', { timeoutMs: 20_000 }, async ($, on) => {
+test('Linux unchanged: GNU find -newermt outside a repo, xdg-open detached', { timeoutMs: 20_000, options: { open: 'app' } }, async ($, on) => {
   const ran: Ran = []
   const root = '/home/k/scratch'
   const clock = world(on, { os: 'linux', env: { HOME: '/home/k' }, cwd: root, top: '', dirs: { [root]: [['a\\b.txt', 'file'], ['c.txt', 'file']] }, status: '', numstat: '' }, ran)
@@ -644,6 +644,23 @@ test('open with: a double-click and Enter run the configured command instead of 
   expect(ran).toContainEqual(['glow', '-p', `${root}/c.md`, '--dir', root])
   await ui.unmount()
 })
+
+for (const [label, options] of [['by default', {}], ['for a blank setting', { open: '  ' }]] as const) {
+  test(`open with is preview ${label}: a double-click in the terminal shows the file in the pane, not the default app`, { timeoutMs: 20_000, options }, async ($, on) => {
+    const ran: Ran = []
+    const root = '/Users/k/proj'
+    const clock = world(on, { os: 'darwin', env: { HOME: '/Users/k' }, cwd: root, top: '', status: '', numstat: '', dirs: { [root]: [['notes.md', 'file']] }, files: { [`${root}/notes.md`]: '# Title\n' } }, ran)
+    await $.session.start({ cwd: root, surface: 'terminal', isInteractive: true })
+    await clock.settle()
+    const ui = await $.ui.mount({ plugin: 'filetree', surface: 'terminal', component: 'Pane', requestId: 'filetree', props: paneProps(60) })
+    await ui.post({ press: `${root}/notes.md` }, { in: 'rows' })
+    await ui.post({ press: `${root}/notes.md` }, { in: 'rows' })
+    await clock.settle()
+    expect(JSON.stringify(await ui.drawn())).toContain('# Title')
+    expect(ran.some(a => a[0] === 'open')).toBe(false)
+    await ui.unmount()
+  })
+}
 
 test('open with preview: a double-click shows the file in the pane, left goes back to the tree, arrows scroll, ↗ opens the default app, a binary file shows a note', { timeoutMs: 20_000, options: { open: 'preview' } }, async ($, on) => {
   const ran: Ran = []
@@ -1147,7 +1164,7 @@ test('on Windows a folder size does not walk into linked folders, like du', { ti
 })
 
 for (const os of ['linux', 'win32'] as const) {
-  test(`${os}: a failed file opener is visible`, { timeoutMs: 20_000 }, async ($, on) => {
+  test(`${os}: a failed file opener is visible`, { timeoutMs: 20_000, options: { open: 'app' } }, async ($, on) => {
     const ran: Ran = []
     const root = os === 'linux' ? '/home/k/proj' : 'C:/Users/k/proj'
     const clock = world(on, {

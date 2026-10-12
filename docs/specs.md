@@ -53,7 +53,7 @@ to them. To install and use the plugin, see the [main README](../README.md).
 | ACT-03 | Committed or staged files shimmer green. The branch row flashes on push-like actions. |
 | ACT-04 | A shimmer lasts 2.7 s. |
 | ACT-05 | Collapsed folders open to reveal a touched file. |
-| ACT-06 | With `follow: on`, the view scrolls to the touched file. With `follow: off` it doesn't scroll, but the shimmer still shows. |
+| ACT-06 | Terminal only. With `follow: on`, the view scrolls to the touched file. With `follow: off` it doesn't scroll, but the shimmer still shows. In the Desktop app the app does the scrolling, so `follow` has no effect there. |
 | ACT-07 | Git and GitHub commands Claude runs show in the footer as running, then done or failed, only when there is evidence of the outcome. |
 | ACT-08 | A background git command stays "running" until its task notification arrives. |
 | ACT-09 | A failed Bash command still triggers a refresh. |
@@ -72,8 +72,9 @@ to them. To install and use the plugin, see the [main README](../README.md).
 | ID | Spec |
 |---|---|
 | OPN-01 | Double-click, Enter, or Ctrl/Shift-click opens a file. |
-| OPN-02 | With `open` empty, the file opens in the OS default app: `open` on macOS, `gio`/`xdg-open` run detached on Linux, PowerShell `Process.Start` on Windows. In the Desktop app, an empty `open` shows the file in the pane instead. |
-| OPN-03 | With `open: preview`, the file opens in an in-pane viewer that renders Markdown and highlights code. |
+| OPN-02 | `open` always has a value. It defaults to `preview`, and a blank value counts as `preview`. |
+| OPN-03 | With `open: preview`, the file opens in an in-pane viewer that renders Markdown and highlights code, on both surfaces. **Open in app ↗** in the viewer always uses the OS default app. |
+| OPN-08 | With `open: app`, the file opens in the OS default app: `open` on macOS, `gio`/`xdg-open` run detached on Linux, PowerShell `Process.Start` on Windows. |
 | OPN-04 | The preview refuses files over 4 MB and says when a file is binary. |
 | OPN-05 | Any other `open` value is run as a command, with no shell. `{path}` and `{dir}` are replaced. Without `{path}`, the path is added at the end. |
 | OPN-06 | The file path is always passed as data, never as shell code. |
@@ -118,9 +119,9 @@ to them. To install and use the plugin, see the [main README](../README.md).
 |---|---|---|
 | CFG-01 | `activity` | `reads and writes`, `writes`, `reads`, `none` |
 | CFG-02 | `glyphs` | `auto`, `nerd`, `plain` |
-| CFG-03 | `follow` | `on`, `off` |
+| CFG-03 | `follow` (terminal only) | `on`, `off` |
 | CFG-04 | `column` | `date`, `size` |
-| CFG-05 | `open` | empty, `preview`, or a command |
+| CFG-05 | `open` | `preview`, `app`, or a command |
 
 ## Quality
 

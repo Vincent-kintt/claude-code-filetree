@@ -40,7 +40,7 @@
     "follow": {
       "type": "string",
       "title": "Follow Claude",
-      "description": "on: the tree scrolls to what Claude reads, writes or commits. off: the view stays where you put it and only your own scrolling moves it; highlights still show.",
+      "description": "Terminal only. on: the tree scrolls to what Claude reads, writes or commits. off: the view stays where you put it and only your own scrolling moves it; highlights still show.",
       "default": "on",
       "options": [
         "on",
@@ -60,8 +60,8 @@
     "open": {
       "type": "string",
       "title": "Open with",
-      "description": "What a double-click or Enter does with a file. Empty: the default app. preview: show it in the pane (left goes back). Anything else is a command run instead: {path} is the file and {dir} its folder; without {path} the path goes last. Words split on spaces, quotes keep a word whole, and no shell runs it. It should start the viewer and return; on Linux it runs detached.",
-      "default": ""
+      "description": "What a double-click or Enter does with a file. preview (default): show it in the pane (left goes back). app: open it in the system's default app. Anything else is a command run instead: {path} is the file and {dir} its folder; without {path} the path goes last. Words split on spaces, quotes keep a word whole, and no shell runs it. It should start the viewer and return; on Linux it runs detached. A blank value means preview.",
+      "default": "preview"
     }
   },
   "license": "MIT"
