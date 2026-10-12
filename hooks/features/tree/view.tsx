@@ -2,7 +2,7 @@ import type { Elements, RenderChildren } from 'claude-code'
 
 import type { Activity } from '../../../types'
 import { ADD_COLOR, DEL_COLOR } from '../../core/constants'
-import { BRANCH_ICON, TONES } from '../../git'
+import { BRANCH_ICON, TONES } from '../../ui/tones'
 import type { TreeModel } from './model'
 
 export type TreeActions = {

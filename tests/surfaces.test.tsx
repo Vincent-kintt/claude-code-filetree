@@ -1,7 +1,10 @@
 import { expect, test } from 'claude-code/testing'
 
 import { LINUX_LAUNCH } from '../hooks/open'
-import { ancestorsOf, formatSize, parseGit, replaceChildren, toNodes } from '../hooks/tree'
+import { ancestorsOf } from '../hooks/core/paths'
+import { formatSize } from '../hooks/features/sizes/model'
+import { parseGit } from '../hooks/features/git-status/model'
+import { replaceChildren, toNodes } from '../hooks/features/tree/nodes'
 import { type Ran, type World, NERD, STAMP, clientIn, envs, opens, paneProps, resync, shimmer, texts, world } from './harness'
 
 test('macOS Claude Code app: desktop pane draws, selects, previews on double-click, opens with open from the preview', { timeoutMs: 20_000 }, async ($, on) => {

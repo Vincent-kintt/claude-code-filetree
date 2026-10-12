@@ -1,4 +1,4 @@
-import type { FileNode } from '../types'
+import type { FileNode } from '../../types'
 
 const cp = (n: number) => String.fromCodePoint(n)
 

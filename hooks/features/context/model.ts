@@ -1,5 +1,4 @@
-import { resolve } from '../../git'
-import { inside } from '../../tree'
+import { inside, resolve } from '../../core/paths'
 
 /** The context line that tells Claude which file the user has selected in the tree. */
 export function selectedContext(path: string): string {

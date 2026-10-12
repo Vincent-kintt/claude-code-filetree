@@ -1,6 +1,6 @@
 import { expect, test } from 'claude-code/testing'
 
-import { toNodes } from '../hooks/tree'
+import { toNodes } from '../hooks/features/tree/nodes'
 import { type Ran, type World, STAMP, clientIn, paneProps, resync, world } from './harness'
 
 type Seg = { t: string; c?: string }

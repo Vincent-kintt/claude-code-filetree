@@ -1,5 +1,5 @@
 import type { FileTree } from '../../../types'
-import { inside, join } from '../../tree'
+import { inside, join } from '../../core/paths'
 
 export const SIZE_TIMEOUT_MS = 15_000
 export const SIZE_JOBS = 2
@@ -44,4 +44,17 @@ export function keptSizes(dirSizes: Record<string, number>, paths?: string[]): R
   const keep: Record<string, number> = {}
   for (const [dir, bytes] of Object.entries(dirSizes)) if (!paths.some(p => inside(dir, p))) keep[dir] = bytes
   return keep
+}
+
+export function formatSize(bytes: number): string {
+  if (bytes < 0) return '?'
+  if (bytes < 1024) return `${bytes} B`
+  const units = ['K', 'M', 'G', 'T']
+  let v = bytes / 1024
+  let i = 0
+  while (v >= 1024 && i < units.length - 1) {
+    v /= 1024
+    i++
+  }
+  return `${v < 100 ? v.toFixed(1) : Math.round(v)} ${units[i]}`
 }

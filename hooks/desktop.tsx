@@ -1,8 +1,8 @@
 import type { Elements, RenderChildren } from 'claude-code'
 
 import type { Touch } from '../types'
-import { TONES } from './git'
-import { GIT_COLOR } from './icons'
+import { TONES } from './ui/tones'
+import { GIT_COLOR } from './ui/icons'
 import { VERSION } from './version'
 
 export type Icon = 'eye' | 'pencil' | 'check' | 'git' | 'x' | 'idle'

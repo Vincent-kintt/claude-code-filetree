@@ -1,5 +1,5 @@
 import { RENDER_CHARS } from '../../core/constants'
-import { inside, relative } from '../../tree'
+import { inside, relative } from '../../core/paths'
 import { shortPath } from '../../core/platform'
 
 export const PREVIEW_CHARS = 90_000

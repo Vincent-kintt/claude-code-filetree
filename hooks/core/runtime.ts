@@ -1,5 +1,5 @@
 import type { Timer } from 'claude-code'
-import type { Change } from '../tree'
+import type { Change } from '../features/git-status/model'
 import type { Background, Job, OS } from './types'
 
 /** The plugin's options, read once when register runs. */

@@ -4,7 +4,7 @@ import { clearFlash, flashPatch, withTouches } from '../hooks/features/activity/
 import { mentionsIn, selectedContext } from '../hooks/features/context/model'
 import { keyAction, scrollToRow, wheelScroll } from '../hooks/features/input/model'
 import { fontStateOf, herdrPointerOk, interruptClaude, layoutRefusal, settingsFrom } from '../hooks/features/session/model'
-import { emptyTree } from '../hooks/tree'
+import { emptyTree } from '../hooks/features/tree/nodes'
 
 const root = '/w'
 const node = (id: string, kind: 'dir' | 'file', loaded = false): FileNode => ({ id, parent: id.slice(0, id.lastIndexOf('/')), name: id.split('/').pop() ?? id, kind, hidden: false, mtime: 0, size: 0, loaded })

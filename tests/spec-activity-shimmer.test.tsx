@@ -1,6 +1,6 @@
 import { expect, test } from 'claude-code/testing'
 
-import { TONES } from '../hooks/git'
+import { TONES } from '../hooks/ui/tones'
 import { type World, clientIn, world } from './harness'
 
 const root = '/home/k/proj'

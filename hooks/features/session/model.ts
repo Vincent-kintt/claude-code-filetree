@@ -1,6 +1,6 @@
 import type { Activity, ClaudeLog, FileTree } from '../../../types'
 import { MIN_COLUMNS } from '../../core/constants'
-import { ancestorsOf, posix } from '../../tree'
+import { ancestorsOf, posix } from '../../core/paths'
 
 export const THEME_FILE = '.local/state/omarchy/current/theme/colors.toml'
 export const THEME_POLL_MS = 2000

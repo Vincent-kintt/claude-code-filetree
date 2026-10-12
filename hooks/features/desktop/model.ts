@@ -2,7 +2,7 @@ import type { Activity, ClaudeLog, FileTree, Now } from '../../../types'
 import { TOUCH_SHOWN } from '../../core/constants'
 import { shortPath } from '../../core/platform'
 import type { Card, DesktopModel } from '../../desktop'
-import { dirname, inside } from '../../tree'
+import { dirname, inside } from '../../core/paths'
 import { relPath } from '../tree/model'
 
 /** The desktop card: what Claude is doing, else the last thing it did, a git action or a file. */

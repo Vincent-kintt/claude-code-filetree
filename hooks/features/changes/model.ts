@@ -1,5 +1,6 @@
 import type { Since } from '../../core/types'
-import { type Change, inside } from '../../tree'
+import { type Change } from '../git-status/model'
+import { inside } from '../../core/paths'
 
 /** The ignored paths a find under `root` prunes. */
 export function scopedIgnored(root: string, ignored: string[]): string[] {

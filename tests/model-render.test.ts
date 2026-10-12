@@ -1,6 +1,7 @@
 import { expect, test } from 'claude-code/testing'
 
-import { DEFAULT_THEME, emptyTree, toNodes } from '../hooks/tree'
+import { DEFAULT_THEME } from '../hooks/features/theme/model'
+import { emptyTree, toNodes } from '../hooks/features/tree/nodes'
 import { cardOf, whereOf } from '../hooks/features/desktop/model'
 import { cutLines, previewLines, previewWindow, scrollTop, shapePreview } from '../hooks/features/preview/model'
 import { capRows, latestActivity, note, relPath, treeView } from '../hooks/features/tree/model'

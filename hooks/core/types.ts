@@ -1,5 +1,5 @@
 import type { BuiltinToolResults } from 'claude-code'
-import type { GitAction } from '../git'
+import type { GitAction } from '../features/git-jobs/commands'
 
 export type OS = 'linux' | 'darwin' | 'win32'
 export type Since = { ms: number; mark: string; os: OS }

@@ -1,4 +1,4 @@
-import { TONES } from '../git'
+import { TONES } from '../ui/tones'
 
 // The desktop page refuses a drawing past about 100,000 characters serialized, so the
 // highlighted file stays well under it.

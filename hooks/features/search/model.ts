@@ -1,5 +1,6 @@
 import { HOME_PRUNE, PRUNE } from '../../core/constants'
-import { dirname, inside, isAbsolute, join, relative, SEARCH_REVEAL_LIMIT } from '../../tree'
+import { dirname, inside, isAbsolute, join, relative } from '../../core/paths'
+import { SEARCH_REVEAL_LIMIT } from '../tree/nodes'
 
 export function searchTerm(query: string): string {
   return query.trim().toLowerCase()

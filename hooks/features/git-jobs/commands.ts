@@ -1,4 +1,6 @@
-import { drivesOn, isAbsolute, posix } from './tree'
+import { segments, stripGlobals } from '../../core/shell'
+import { BRANCH_ICON } from '../../ui/tones'
+import { READERS } from '../reads/model'
 
 export type GitAction = {
   kind: string
@@ -16,7 +18,7 @@ const ICON = {
   commit: { nerd: '\u{f417}', plain: '●' },
   push: { nerd: '\u{f0552}', plain: '↑' },
   pull: { nerd: '\u{f0553}', plain: '↓' },
-  branch: { nerd: '\u{f418}', plain: '⑂' },
+  branch: BRANCH_ICON,
   merge: { nerd: '\u{f419}', plain: '⑃' },
   pr: { nerd: '\u{f407}', plain: '⇄' },
   github: { nerd: '\u{f408}', plain: '◎' },
@@ -24,16 +26,6 @@ const ICON = {
   undo: { nerd: '\u{f054c}', plain: '↶' },
   tag: { nerd: '\u{f412}', plain: '⌖' },
   git: { nerd: '\u{e702}', plain: '±' },
-}
-
-export const TONES: Record<string, { bright: string[]; dim: string[]; solid: string }> = {
-  orange: { bright: ['#f97316', '#fb923c', '#fdba74', '#ffedd5'], dim: ['#8a4316', '#a3562a', '#bd7444', '#d29267'], solid: '#f97316' },
-  green: { bright: ['#22c55e', '#4ade80', '#86efac', '#dcfce7'], dim: ['#14532d', '#166534', '#2f7a47', '#4f9a66'], solid: '#4ade80' },
-  teal: { bright: ['#14b8a6', '#2dd4bf', '#5eead4', '#ccfbf1'], dim: ['#0f5e57', '#16786f', '#2a9488', '#4fb3a8'], solid: '#2dd4bf' },
-  blue: { bright: ['#3b82f6', '#60a5fa', '#93c5fd', '#dbeafe'], dim: ['#1e3a8a', '#1d4ed8', '#3b6fd1', '#6b93dc'], solid: '#60a5fa' },
-  purple: { bright: ['#a855f7', '#c084fc', '#d8b4fe', '#f3e8ff'], dim: ['#581c87', '#6b21a8', '#8b47c4', '#a874d6'], solid: '#c084fc' },
-  cyan: { bright: ['#06b6d4', '#22d3ee', '#67e8f9', '#cffafe'], dim: ['#155e75', '#0e7490', '#2b8ea3', '#5aa9b8'], solid: '#22d3ee' },
-  red: { bright: ['#ef4444', '#f87171', '#fca5a5', '#fee2e2'], dim: ['#7f1d1d', '#991b1b', '#b54040', '#c96a6a'], solid: '#f87171' },
 }
 
 const GIT_VERBS: Record<string, Omit<GitAction, 'kind'>> = {
@@ -71,69 +63,6 @@ const GH_VERBS: Record<string, Omit<GitAction, 'kind'>> = {
 }
 
 const READ_ONLY_GIT = new Set(['status', 'log', 'diff', 'show', 'blame', 'rev-parse', 'ls-files', 'grep', 'describe', 'config', 'remote', 'reflog', 'shortlog', 'help', 'version', 'check-ignore'])
-
-function segments(command: string, seps: string[] = []): string[][] {
-  const out: string[][] = []
-  let cur: string[] = []
-  let tok = ''
-  let quote = ''
-  let has = false
-  const endTok = () => {
-    if (has) cur.push(tok)
-    tok = ''
-    has = false
-  }
-  const endSeg = () => {
-    endTok()
-    if (cur.length) out.push(cur)
-    cur = []
-  }
-  for (let i = 0; i < command.length; i++) {
-    const ch = command[i] ?? ''
-    if (quote) {
-      if (ch === quote) quote = ''
-      else if (ch === '\\' && quote === '"' && i + 1 < command.length) tok += command[++i]
-      else tok += ch
-    } else if (ch === '"' || ch === "'") {
-      quote = ch
-      has = true
-    } else if (ch === '\\' && i + 1 < command.length) {
-      tok += command[++i]
-      has = true
-    } else if (ch === '#' && !has) {
-      while (i + 1 < command.length && command[i + 1] !== '\n') i++
-    } else if (ch === ' ' || ch === '\t') endTok()
-    else if (ch === '\n' || ch === ';') {
-      seps.push(';')
-      endSeg()
-    } else if (ch === '&' && (command[i - 1] === '>' || command[i + 1] === '>')) {
-      tok += ch
-      has = true
-    } else if (ch === '&' || ch === '|') {
-      const twice = command[i + 1] === ch
-      if (twice) i++
-      seps.push(twice ? ch + ch : ch)
-      endSeg()
-    } else {
-      tok += ch
-      has = true
-    }
-  }
-  endSeg()
-  if (!quote) return out
-  seps.push(';')
-  return command
-    .split(/&&|\|\||;|\||\n/)
-    .map(s => s.trim().split(/\s+/).filter(Boolean))
-    .filter(s => s.length > 0)
-}
-
-function stripGlobals(tokens: string[]): string[] {
-  const out = [...tokens]
-  if (out[0] === 'env') out.shift()
-  while (out.length && /^[A-Z_][A-Z0-9_]*=/.test(out[0] ?? '')) out.shift()
-  return out
-}
 
 function gitVerb(tokens: string[]): number {
   let i = 1
@@ -185,31 +114,6 @@ export function gitActions(command: string): GitAction[] {
   return out
 }
 
-export const BRANCH_ICON = ICON.branch
-
-const READERS = new Set(['rg', 'grep', 'egrep', 'fgrep', 'find', 'fd', 'fdfind', 'cat', 'head', 'tail', 'bat', 'less', 'more', 'ls', 'eza', 'tree', 'wc', 'sed', 'awk', 'jq'])
-const PATTERN_FIRST = new Set(['rg', 'grep', 'egrep', 'fgrep', 'sed', 'awk', 'jq'])
-const OUTPUT_PATHS = new Set(['rg', 'grep', 'egrep', 'fgrep', 'find', 'fd', 'fdfind'])
-
-function tidy(path: string): string {
-  const s = path.replace(/\/+$/, '')
-  return s === '' ? '/' : /^[A-Za-z]:$/.test(s) && isAbsolute(`${s}/`) ? `${s}/` : s
-}
-
-export function resolve(cwd: string, p: string, home = ''): string {
-  let path = posix(p)
-  if (home && (path === '~' || path.startsWith('~/'))) path = home + path.slice(1)
-  const drive = isAbsolute(path) && !path.startsWith('/') ? path.slice(0, 2) : ''
-  const parts = isAbsolute(path) ? [drive] : posix(cwd).replace(/\/+$/, '').split('/')
-  for (const seg of path.slice(drive.length).split('/')) {
-    if (!seg || seg === '.') continue
-    if (seg === '..') {
-      if (parts.length > 1) parts.pop()
-    } else parts.push(seg)
-  }
-  return tidy(parts.join('/'))
-}
-
 const WRITE_FLAGS = /^-(delete|exec|execdir|ok|okdir|fprint\w*|fls|x|X|-exec|-exec-batch)$/
 
 export function readOnly(command: string): boolean {
@@ -229,41 +133,3 @@ export function readOnly(command: string): boolean {
   })
 }
 
-export function readTargets(command: string, sessionCwd: string, stdout: string, home = ''): string[] {
-  let cwd = sessionCwd
-  const out = new Set<string>()
-  let listsPaths = false
-  for (const raw of segments(command)) {
-    const tokens = stripGlobals(raw).map(t => posix(t.replace(/^["']|["']$/g, '')))
-    const head = tokens[0]?.split('/').pop() ?? ''
-    if (head === 'cd' && tokens[1]) {
-      cwd = resolve(cwd, tokens[1], home)
-      continue
-    }
-    if (!READERS.has(head)) continue
-    if (head === 'sed' && tokens.some(t => /^-i/.test(t))) continue
-    if (OUTPUT_PATHS.has(head)) listsPaths = true
-    const args = tokens.slice(1)
-    let skipPattern = PATTERN_FIRST.has(head) && !args.some(t => t === '-e' || t === '-f' || t === '--files')
-    for (let i = 0; i < args.length; i++) {
-      const a = args[i] ?? ''
-      if (a.startsWith('-')) {
-        if (/^-(e|f|g|t|T|m|A|B|C|-glob|-type|-max-count|name|iname|maxdepth|mindepth)$/.test(a)) i++
-        continue
-      }
-      if (skipPattern) {
-        skipPattern = false
-        continue
-      }
-      if (/[*?<>|]/.test(a)) continue
-      out.add(resolve(cwd, a, home))
-    }
-  }
-  if (listsPaths) {
-    for (const line of stdout.split('\n').slice(0, 400)) {
-      const path = posix(line).match(drivesOn() ? /^((?:[A-Za-z]:)?[^:\0]+?)(?::\d+[:-]|$|:)/ : /^([^:\0]+?)(?::\d+[:-]|$|:)/)?.[1]?.trim()
-      if (path && !path.includes(' ')) out.add(resolve(cwd, path, home))
-    }
-  }
-  return [...out].slice(0, 60)
-}

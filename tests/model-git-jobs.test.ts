@@ -1,7 +1,7 @@
 import { expect, test } from 'claude-code/testing'
 import type { Activity } from '../types'
 import type { GitOperation, Job, Pending } from '../hooks/core/types'
-import { gitActions } from '../hooks/git'
+import { gitActions } from '../hooks/features/git-jobs/commands'
 import { branchTone, failAll, namedPaths, outcomesOf, paint, proven, settled, sinceOf, started, taskEnds, touchTone, writes } from '../hooks/features/git-jobs/model'
 import { searchNames, searchReads } from '../hooks/features/reads/model'
 

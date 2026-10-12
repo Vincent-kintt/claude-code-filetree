@@ -1,5 +1,6 @@
 import type { FileNode, FileTree } from '../../../types'
-import { ancestorsOf, type Entry } from '../../tree'
+import { ancestorsOf } from '../../core/paths'
+import { type Entry } from '../tree/nodes'
 
 type Listed = { name: string; kind: Entry['kind']; mtimeMs: number; size: number; isLink: boolean }
 type Target = { kind: Entry['kind']; mtimeMs: number; size: number }

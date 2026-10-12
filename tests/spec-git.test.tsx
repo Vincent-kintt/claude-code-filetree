@@ -1,6 +1,6 @@
 import { expect, test } from 'claude-code/testing'
 
-import { parseBranch, parseGit } from '../hooks/tree'
+import { parseBranch, parseGit } from '../hooks/features/git-status/model'
 import { type Ran, type World, clientIn, paneProps, world } from './harness'
 
 type Row = { id: string; left: { t: string; c?: string }[]; right: { t: string; c?: string }[] }

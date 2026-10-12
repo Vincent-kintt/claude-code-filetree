@@ -2,7 +2,7 @@ import type { FileNode, FileTree } from '../../../types'
 import { DOUBLE_MS } from '../../core/constants'
 import type { OS } from '../../core/types'
 import { LINUX_LAUNCH, openCommand, openWithCommand } from '../../open'
-import { dirname, inside } from '../../tree'
+import { dirname, inside } from '../../core/paths'
 
 // The setting always has a value: a blank one falls back to the default, preview.
 export function openSetting(openWith: string): string {

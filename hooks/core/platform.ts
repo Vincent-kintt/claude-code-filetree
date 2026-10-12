@@ -1,4 +1,4 @@
-import { inside } from '../tree'
+import { inside } from './paths'
 import { HOME_PRUNE, PRUNE } from './constants'
 import { rt } from './runtime'
 

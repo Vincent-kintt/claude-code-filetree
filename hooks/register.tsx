@@ -7,25 +7,15 @@ import { desktopText, previewWindow, scrollTop, shapePreview } from './features/
 import { terminalPreview } from './features/preview/view'
 import { latestActivity, rowColors, treeModel, treeView } from './features/tree/model'
 import { terminalPane } from './features/tree/view'
-import { type GitAction, gitActions, readOnly, readTargets, resolve } from './git'
+import { type GitAction, gitActions, readOnly } from './features/git-jobs/commands'
+import { reading, readTargets, searchNames, searchReads } from './features/reads/model'
+import { dirname, drivesOn, inside, join, posix, resolve, useDrives } from './core/paths'
 import type { RowsProps } from './rows'
 import { VERSION } from './version'
-import {
-  type Change,
-  DEFAULT_THEME,
-  dirname,
-  drivesOn,
-  emptyTree,
-  formatSize,
-  inside,
-  join,
-  parseGit,
-  parseTheme,
-  posix,
-  useDrives,
-  replaceChildren,
-  toNodes,
-} from './tree'
+import { assembleGit, type Change, gitdirRef, gitPathsArgs, mapGitPaths, othersArgs, parseGit, parseHead, parseRevParse, watchFiles } from './features/git-status/model'
+import { DEFAULT_THEME, parseTheme } from './features/theme/model'
+import { emptyTree, replaceChildren, toNodes } from './features/tree/nodes'
+import { enqueue, formatSize, keptSizes, parseDu, SIZE_JOBS, SIZE_TIMEOUT_MS, sizePatch, stillWanted, tallyDir } from './features/sizes/model'
 import {
   ACTIVITY_TTL_MS,
   BRANCH_ROW,
@@ -68,17 +58,14 @@ import {
   withoutIds,
   writes,
 } from './features/git-jobs/model'
-import { reading, searchNames, searchReads } from './features/reads/model'
 import { clearFlash, flashPatch, withTouches } from './features/activity/model'
 import { mentionsIn, selectedContext } from './features/context/model'
 import { keyAction, pressedNode, scrollToRow, wheelScroll, wheelStep } from './features/input/model'
 import { FONT_SCRIPT, fontStateOf, herdrPointerOk, homeOf, interruptActivities, interruptClaude, jumpPatch, layoutRefusal, paneTitle, revealPatch, settingsFrom, THEME_POLL_MS, themePath } from './features/session/model'
 import { changedArgv, dirtySplit, foundPaths, markPath, scopedIgnored } from './features/changes/model'
-import { assembleGit, gitdirRef, gitPathsArgs, mapGitPaths, othersArgs, parseHead, parseRevParse, watchFiles } from './features/git-status/model'
 import { entryOf, freshListings, linkEntry, listError, missingDirs, openDirs } from './features/listing/model'
 import { copyText, openFailed, openPlan, openSetting, pressOf, togglePatch } from './features/open/model'
 import { findFilesArgv, indexedPaths, listDepth, matches, searchTerm, staleDirs, walkSkip } from './features/search/model'
-import { enqueue, keptSizes, parseDu, SIZE_JOBS, SIZE_TIMEOUT_MS, sizePatch, stillWanted, tallyDir } from './features/sizes/model'
 
 // The host lists what a module reads and writes from these literals, so they stay in this file.
 const TREE = { plugin: 'filetree', key: 'tree' } as const

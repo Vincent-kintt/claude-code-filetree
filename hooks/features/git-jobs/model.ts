@@ -2,8 +2,8 @@ import type { BuiltinToolResults } from 'claude-code'
 import type { Activity, FileNode, Now } from '../../../types'
 import { ACTIVITY_TTL_MS, FIND_LIMIT, READ_REVEAL_LIMIT } from '../../core/constants'
 import type { GitOperation, Job, Outcome, Pending, Since } from '../../core/types'
-import { chainOf, type GitAction, resolve } from '../../git'
-import { dirname, inside, underAny } from '../../tree'
+import { chainOf, type GitAction } from './commands'
+import { dirname, inside, resolve, underAny } from '../../core/paths'
 
 export const PROOF: Record<string, (op: GitOperation) => boolean> = {
   push: op => Boolean(op.push),

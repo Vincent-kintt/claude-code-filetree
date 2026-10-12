@@ -1,9 +1,11 @@
 import type { Activity, FileTree, Theme } from '../../../types'
 import { ACTIVITY_TTL_MS, ADD_COLOR, BRANCH_ROW, DATE_MIN_COLUMNS, DEL_COLOR, RENDER_CHARS, RUNNING_MAX_MS, SHIMMER, SHIMMER_DESKTOP } from '../../core/constants'
 import { shortPath } from '../../core/platform'
-import { CHEVRON_CLOSED, CHEVRON_OPEN, fileIcon, GIT_COLOR } from '../../icons'
+import { CHEVRON_CLOSED, CHEVRON_OPEN, fileIcon, GIT_COLOR } from '../../ui/icons'
 import type { RowSpec, RowsProps, Seg } from '../../rows'
-import { dirname, formatSize, inside, type Row, rowsOf, stamp, underAny } from '../../tree'
+import { dirname, inside, underAny } from '../../core/paths'
+import { formatSize } from '../sizes/model'
+import { type Row, rowsOf } from './nodes'
 
 export type RowColors = Pick<RowsProps, 'activeBg' | 'hoverBg' | 'tones'>
 export type Bar = NonNullable<RowsProps['bar']>
@@ -246,4 +248,11 @@ export function treeModel(t: FileTree, view: TreeView, theme: Theme, unicode: bo
     unicode,
     minHeight: Math.max(1, bodyRows ?? 1),
   }
+}
+
+function stamp(ms: number): string {
+  if (!ms) return ''
+  const d = new Date(ms)
+  const p = (v: number) => String(v).padStart(2, '0')
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`
 }

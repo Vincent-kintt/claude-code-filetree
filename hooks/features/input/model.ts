@@ -1,5 +1,5 @@
 import type { FileNode, FileTree } from '../../../types'
-import { rowsOf } from '../../tree'
+import { rowsOf } from '../tree/nodes'
 
 /** What a key in the pane asks for; the shell carries it out. */
 export type KeyAction =
