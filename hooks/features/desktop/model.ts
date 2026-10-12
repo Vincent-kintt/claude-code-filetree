@@ -1,7 +1,7 @@
 import type { Activity, ClaudeLog, FileTree, Now } from '../../../types'
 import { TOUCH_SHOWN } from '../../core/constants'
 import { shortPath } from '../../core/platform'
-import type { Card, DesktopModel } from '../../desktop'
+import type { Card, DesktopModel } from './view'
 import { dirname, inside } from '../../core/paths'
 import { relPath } from '../tree/model'
 

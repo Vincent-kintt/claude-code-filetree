@@ -1,5 +1,5 @@
 import { expect, test } from 'claude-code/testing'
-import { openCommand, openWithCommand } from '../hooks/open'
+import { openCommand, openWithCommand } from '../hooks/features/open/model'
 
 test('open keeps file and URL targets literal on every platform', () => {
   for (const os of ['linux', 'darwin', 'win32'] as const) {

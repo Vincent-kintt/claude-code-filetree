@@ -1,6 +1,6 @@
 import { expect, test } from 'claude-code/testing'
 
-import { LINUX_LAUNCH, LINUX_OPEN } from '../hooks/open'
+import { LINUX_LAUNCH, LINUX_OPEN } from '../hooks/features/open/model'
 import { type Ran, type World, envs, paneProps, world } from './harness'
 
 type Os = World['os']

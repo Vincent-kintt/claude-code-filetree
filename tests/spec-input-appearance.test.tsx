@@ -1,7 +1,7 @@
 import { expect, test } from 'claude-code/testing'
 
 import { fileIcon } from '../hooks/ui/icons'
-import Rows, { type RowsProps } from '../hooks/rows'
+import Rows, { type RowsProps } from '../hooks/ui/rows'
 import { type Ran, type World, NERD, STAMP, clientIn, paneProps, resync, shimmer, texts, world } from './harness'
 
 const done = (stdout: string) => ({ value: { exitCode: 0, stdout, stderr: '', isStdoutTruncated: false, isStderrTruncated: false } })

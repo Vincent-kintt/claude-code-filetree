@@ -1,6 +1,6 @@
 import { expect, test } from 'claude-code/testing'
 
-import { badgeOf } from '../hooks/desktop'
+import { badgeOf } from '../hooks/features/desktop/view'
 import { block, frame, paneProps, world } from './harness'
 
 const root = '/Users/k/claude-code-filetree'

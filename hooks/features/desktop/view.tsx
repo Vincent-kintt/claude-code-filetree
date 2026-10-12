@@ -1,9 +1,9 @@
 import type { Elements, RenderChildren } from 'claude-code'
 
-import type { Touch } from '../types'
-import { TONES } from './ui/tones'
-import { GIT_COLOR } from './ui/icons'
-import { VERSION } from './version'
+import type { Touch } from '../../../types'
+import { TONES } from '../../ui/tones'
+import { GIT_COLOR } from '../../ui/icons'
+import { VERSION } from '../../version'
 
 export type Icon = 'eye' | 'pencil' | 'check' | 'git' | 'x' | 'idle'
 export type Card = { tone: string; phase: string; title: string; sub: string; icon: Icon; live: boolean }

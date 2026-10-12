@@ -3,7 +3,7 @@ import { mkdtempSync, mkdirSync, rmSync, symlinkSync, writeFileSync } from 'node
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { spawnSync } from 'node:child_process'
-import { LINUX_LAUNCH, LINUX_OPEN } from '../hooks/open'
+import { LINUX_LAUNCH, LINUX_OPEN } from '../hooks/features/open/model'
 
 const dir = mkdtempSync(join(tmpdir(), 'pane-open-'))
 const bin = join(dir, 'bin')

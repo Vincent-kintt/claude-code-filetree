@@ -1,6 +1,6 @@
 import { expect, test } from 'claude-code/testing'
 
-import { LINUX_LAUNCH } from '../hooks/open'
+import { LINUX_LAUNCH } from '../hooks/features/open/model'
 import { ancestorsOf } from '../hooks/core/paths'
 import { formatSize } from '../hooks/features/sizes/model'
 import { parseGit } from '../hooks/features/git-status/model'

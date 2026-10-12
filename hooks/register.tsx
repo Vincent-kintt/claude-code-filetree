@@ -1,7 +1,7 @@
 import { type EngineInterface, type Register, type ResultOf, update } from 'claude-code'
 
 import type { Activity, ClaudeLog, FileNode, FileTree, Now, Theme, Touch } from '../types'
-import { desktopPane, desktopPreview } from './desktop'
+import { desktopPane, desktopPreview } from './features/desktop/view'
 import { desktopModel } from './features/desktop/model'
 import { desktopText, previewWindow, scrollTop, shapePreview } from './features/preview/model'
 import { terminalPreview } from './features/preview/view'
@@ -10,7 +10,7 @@ import { terminalPane } from './features/tree/view'
 import { type GitAction, gitActions, readOnly } from './features/git-jobs/commands'
 import { reading, readTargets, searchNames, searchReads } from './features/reads/model'
 import { dirname, drivesOn, inside, join, posix, resolve, useDrives } from './core/paths'
-import type { RowsProps } from './rows'
+import type { RowsProps } from './ui/rows'
 import { VERSION } from './version'
 import { assembleGit, type Change, gitdirRef, gitPathsArgs, mapGitPaths, othersArgs, parseGit, parseHead, parseRevParse, watchFiles } from './features/git-status/model'
 import { DEFAULT_THEME, parseTheme } from './features/theme/model'
@@ -1052,7 +1052,7 @@ export const register: Register = (on, options) => {
       const lines = (
         <Client
           key="rows"
-          module="./rows.tsx"
+          module="./ui/rows.tsx"
           props={{ rows: [], active: '', ...colors, pointer: false, preview: { text: w.win.text, path, startLine: w.win.top + 1, markdown: w.markdown } } satisfies RowsProps}
         />
       )
@@ -1066,7 +1066,7 @@ export const register: Register = (on, options) => {
     const tree = (
       <Client
         key="rows"
-        module="./rows.tsx"
+        module="./ui/rows.tsx"
         props={{ rows: view.specs, active: t.cursor, ...colors, pointer: rt.pointer, ...(view.bar ? { bar: view.bar } : {}) } satisfies RowsProps}
       />
     )
