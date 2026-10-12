@@ -23,7 +23,6 @@ export function emptyTree(root: string): FileTree {
     cursor: '',
     selected: '',
     query: '',
-    showHidden: true,
     showSize: false,
     dirSizes: {},
     git: {},
@@ -81,13 +80,6 @@ export function drivesOn(): boolean {
 export function posix(path: string): string {
   if (!drives) return path
   return path.replace(/\\/g, '/').replace(/^\/([A-Za-z])(\/|$)/, (_, d: string) => `${d.toUpperCase()}:/`)
-}
-
-export function dropBelow(nodes: FileNode[], dirs: string[]): FileNode[] {
-  if (dirs.length === 0) return nodes
-  const under = (id: string) => dirs.some(d => id !== d && inside(d, id))
-  const gone = new Set(dirs)
-  return nodes.filter(n => !under(n.id)).map(n => (gone.has(n.id) && n.loaded ? { ...n, loaded: false } : n))
 }
 
 export function isAbsolute(path: string): boolean {
@@ -284,7 +276,6 @@ export function relative(root: string, path: string): string {
 export function visibleRows(t: FileTree): Row[] {
   const kids = new Map<string, FileNode[]>()
   for (const n of t.nodes) {
-    if (!t.showHidden && n.hidden) continue
     const list = kids.get(n.parent)
     if (list) list.push(n)
     else kids.set(n.parent, [n])

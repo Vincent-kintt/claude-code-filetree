@@ -40,7 +40,7 @@ Installed it as `filetree@filetree` before the repository was renamed? Nothing t
 
 ## Features
 
-- Interactive file tree for the working directory where you're using Claude Code; it follows the cwd, or `/filetree <path>` pins another folder
+- Interactive file tree for the working directory where you're using Claude Code; it follows the cwd
 - Search the file tree, including folders you have not opened yet
 - Git status per file and folder in color, with exact lines changed (`+N` `-N`) on modified files and `?:N M:N D:N` file counts on folders
 - Branch, upstream and ahead/behind in the header
@@ -56,7 +56,7 @@ Installed it as `filetree@filetree` before the repository was renamed? Nothing t
 
   <img src="media/filetree-ask.gif" alt="Selecting config.yaml in the tree and asking Claude what it changed there" width="800">
 
-- File and folder sizes: the `Σ` header button swaps the date column for sizes; folders show their disk usage (`du`, or a summed listing on Windows), worked out in the background for the rows on screen and refreshed after Claude writes
+- File and folder sizes: set **Right column** to `size` to show sizes instead of dates; folders show their disk usage (`du`, or a summed listing on Windows), worked out in the background for the rows on screen and refreshed after Claude writes
 - Double-click a file to open it in its default app
 - Click to select, arrow keys to move through the tree
 - Light on large repos: outside a repo it only checks once whether one exists, and every git call is scoped to the cwd
@@ -89,7 +89,7 @@ All settings are in `/config` under filetree.
 
 - **Claude activity:** what shimmers: `reads and writes` (default), `writes`, `reads` or `none`. Git status, line counts and the git status at the bottom always show.
 - **Follow Claude:** `on` (default) scrolls the tree to what Claude reads, writes or commits; `off` keeps the view where you put it, and highlights still show.
-- **Right column:** `date` (default) or `size`; what the right column shows when a session starts. The `Σ` button in the header toggles it.
+- **Right column:** `date` (default) or `size`; what the right column shows.
 - **Open with:** empty (default) opens a double-clicked file in its default app, and in the Desktop app shows it in the pane. `preview` shows it in the pane instead: Markdown rendered, code highlighted, arrow keys, Page Up/Down and the wheel to scroll, `←`/`h` or `← files` back to the tree, `↗` the default app. Otherwise a command that double-click and Enter run instead: `{path}` is the file and `{dir}` its folder, and without `{path}` the path goes last. It runs without a shell, so quote a word that holds spaces, and it should start the viewer and return rather than wait for it. Examples: `zed {path}`, `code -g {path}`, or in herdr a tab running [herdr-file-viewer](https://github.com/smarzban/herdr-file-viewer) on the file: `herdr plugin pane open --plugin herdr-file-viewer --entrypoint file-viewer --placement tab --focus --env HERDR_FILE_VIEWER_OPEN={path}`.
 - **Glyphs:** `auto` (default) uses Nerd Font icons when a Nerd Font is installed and your terminal started after it was installed, plain Unicode in the desktop app, and Nerd Font over SSH. `nerd` or `plain` forces one.
 

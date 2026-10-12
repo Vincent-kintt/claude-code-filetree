@@ -129,6 +129,12 @@ function clientIn(node: any): any {
   return undefined
 }
 
+// Pane focus, a prompt and every message from the rows resync the tree, at most once per 2 s.
+async function resync(ui: any, clock: any): Promise<void> {
+  await clock.advance(2_100)
+  await ui.post({}, { in: 'rows' })
+}
+
 const STAMP = /\d{4}-\d{2}-\d{2} \d{2}:\d{2}/
 const NERD = /[\u{e000}-\u{f8ff}\u{f0000}-\u{fffff}]/u
 
@@ -239,7 +245,7 @@ test('Linux unchanged: GNU find -newermt outside a repo, xdg-open detached', { t
   await ui.unmount()
 })
 
-test('desktop: no button rows, the search box finds and jumps, the view menu shows only what git reports changed', { timeoutMs: 20_000 }, async ($, on) => {
+test('desktop: the search box finds and jumps, the view menu shows only what git reports changed', { timeoutMs: 20_000 }, async ($, on) => {
   const root = '/Users/k/proj'
   const clock = world(on, {
     os: 'darwin', env: { HOME: '/Users/k' }, cwd: root, top: root,
@@ -250,7 +256,6 @@ test('desktop: no button rows, the search box finds and jumps, the view menu sho
   await clock.settle()
   const ui = await $.ui.mount({ plugin: 'filetree', surface: 'desktop', component: 'Pane', requestId: 'filetree', props: paneProps(60) })
   await clock.settle()
-  for (const key of ['refresh', 'collapse', 'size', 'up', 'cwd', 'hidden', 'unselect']) expect(await ui.find({ key })).toBeUndefined()
   await ui.input({ key: 'q', text: 'c.ts' })
   await clock.settle()
   const jumped = await texts(ui)
@@ -562,28 +567,44 @@ test('in the desktop app /filetree opens the pane without the terminal layout ch
 })
 
 const shimmer = (name: string, tone: string) => `"t":${JSON.stringify(name)},"sh":"${tone}"`
-const fullscreen = (args: string) => ({ command: 'filetree', args, origin: { kind: 'person' }, presentation: { isFullscreen: true, columns: 200 } }) as any
 
-test('after /clear the tree rebuilds itself, keeps a pinned folder, and an empty root never loops', { timeoutMs: 20_000 }, async ($, on) => {
+test('after /clear the tree rebuilds itself at the cwd, and an empty root never loops', { timeoutMs: 20_000 }, async ($, on) => {
   const ran: Ran = []
   const root = '/home/k/proj'
-  const clock = world(on, { os: 'linux', env: { HOME: '/home/k' }, cwd: root, top: '', dirs: { [root]: [['a.ts', 'file'], ['sub', 'dir']], [`${root}/sub`]: [['b.ts', 'file']] }, status: '', numstat: '' }, ran)
+  const sub = `${root}/sub`
+  const clock = world(on, { os: 'linux', env: { HOME: '/home/k' }, cwd: sub, top: '', dirs: { [root]: [['a.ts', 'file'], ['sub', 'dir']], [sub]: [['b.ts', 'file']] }, status: '', numstat: '' }, ran)
   on('classic.SessionStart', () => ({}))
   expect(ancestorsOf('/repo/a.ts', '')).toEqual([])
   expect(ancestorsOf('/repo2/a.ts', '/repo')).toEqual([])
   const ui = await $.ui.mount({ plugin: 'filetree', surface: 'terminal', component: 'Pane', requestId: 'filetree', props: paneProps(60) })
-  await $.tool.call({ tool: 'Read', file_path: `${root}/a.ts` } as any)
+  await $.tool.call({ tool: 'Read', file_path: `${sub}/b.ts` } as any)
   await clock.settle()
-  await $.classic.SessionStart({ source: 'clear', cwd: root } as any)
+  await $.classic.SessionStart({ source: 'clear', cwd: sub } as any)
   await clock.settle()
-  expect(await texts(ui)).toContain(`"id":"${root}/a.ts"`)
-  await $.command.run(fullscreen(`${root}/sub`))
+  expect(await texts(ui)).toContain(`"id":"${sub}/b.ts"`)
+  await ui.unmount()
+})
+
+test('the tree stays rooted at the cwd: a double-click or ctrl-click on a folder only expands it', { timeoutMs: 20_000 }, async ($, on) => {
+  const ran: Ran = []
+  const root = '/home/k/proj'
+  const sub = `${root}/sub`
+  const clock = world(on, { os: 'linux', env: { HOME: '/home/k' }, cwd: root, top: '', dirs: { [root]: [['a.ts', 'file'], ['sub', 'dir']], [sub]: [['b.ts', 'file']] }, status: '', numstat: '' }, ran)
+  await $.session.start({ cwd: root, surface: 'terminal', isInteractive: true })
   await clock.settle()
-  await $.classic.SessionStart({ source: 'clear', cwd: root } as any)
+  const ui = await $.ui.mount({ plugin: 'filetree', surface: 'terminal', component: 'Pane', requestId: 'filetree', props: paneProps(60) })
+  await ui.post({ press: sub }, { in: 'rows' })
+  await ui.post({ press: sub }, { in: 'rows' })
   await clock.settle()
-  const shown = await texts(ui)
-  expect(shown).toContain(`"id":"${root}/sub/b.ts"`)
-  expect(shown).not.toContain(`"id":"${root}/a.ts"`)
+  let shown = await texts(ui)
+  expect(shown).toMatch(STAMP)
+  expect(shown).toContain(`"id":"${root}/a.ts"`)
+  expect(shown).toContain(`"id":"${sub}/b.ts"`)
+  await ui.post({ press: sub, ctrl: true }, { in: 'rows' })
+  await clock.settle()
+  shown = await texts(ui)
+  expect(shown).toContain(`"id":"${root}/a.ts"`)
+  expect(shown).not.toContain(`"id":"${sub}/b.ts"`)
   await ui.unmount()
 })
 
@@ -792,13 +813,13 @@ test('an older directory listing never overwrites a newer one', { timeoutMs: 20_
   await $.session.start({ cwd: root, surface: 'terminal', isInteractive: true })
   await clock.settle()
   const ui = await $.ui.mount({ plugin: 'filetree', surface: 'terminal', component: 'Pane', requestId: 'filetree', props: paneProps(60) })
-  w.delays = { [root]: [1_000] }
-  await ui.press({ key: 'refresh' })
+  w.delays = { [root]: [5_000] }
+  await resync(ui, clock)
   w.dirs[root] = [['new.txt', 'file']]
-  await ui.press({ key: 'refresh' })
+  await resync(ui, clock)
   await clock.settle()
   expect(await texts(ui)).toContain('new.txt')
-  await clock.advance(1_500)
+  await clock.advance(5_000)
   const shown = await texts(ui)
   expect(shown).toContain('new.txt')
   expect(shown).not.toContain('old.txt')
@@ -814,7 +835,7 @@ test('a listing error keeps the cached rows and says so', { timeoutMs: 20_000 },
   await clock.settle()
   const ui = await $.ui.mount({ plugin: 'filetree', surface: 'terminal', component: 'Pane', requestId: 'filetree', props: paneProps(60) })
   w.denied = [root]
-  await ui.press({ key: 'refresh' })
+  await resync(ui, clock)
   await clock.settle()
   expect(await texts(ui)).toContain(`"id":"${root}/a.txt"`)
   expect(ran.some(a => a[0] === 'toast' && (a[1] ?? '').includes('could not list'))).toBe(true)
@@ -970,7 +991,7 @@ test('search matches relative paths, and a refresh or a click in the tree picks 
   await ui.input({ key: 'q', text: 'alpha', kind: 'change' })
   await clock.settle()
   w.dirs[`${root}/src`] = [['a.ts', 'file'], ['beta.ts', 'file']]
-  await ui.press({ key: 'refresh' })
+  await resync(ui, clock)
   await ui.input({ key: 'q', text: 'beta', kind: 'change' })
   await clock.settle()
   expect(await texts(ui)).toContain(`"id":"${root}/src/beta.ts"`)
@@ -982,16 +1003,6 @@ test('search matches relative paths, and a refresh or a click in the tree picks 
   await clock.settle()
   expect(await texts(ui)).toContain(`"id":"${root}/src/gamma.ts"`)
   await ui.unmount()
-})
-
-test('a pinned path with dot segments resolves to the same folder', { timeoutMs: 20_000 }, async ($, on) => {
-  const ran: Ran = []
-  const root = '/home/k/proj'
-  const clock = world(on, { os: 'linux', env: { HOME: '/home/k' }, cwd: '/home/k', top: '', dirs: { [root]: [['a.ts', 'file']], [`${root}/src`]: [] }, status: '', numstat: '' }, ran)
-  await $.session.start({ cwd: '/home/k', surface: 'terminal', isInteractive: true })
-  await clock.settle()
-  const r = await $.command.run(fullscreen(`${root}/./src/..`))
-  expect(JSON.stringify(r)).toContain('File tree on ~/proj.')
 })
 
 test('a written file whose name holds a newline still shimmers', { timeoutMs: 20_000 }, async ($, on) => {
@@ -1052,7 +1063,7 @@ test('formatSize: bytes, binary units, one decimal under 100, ? for unknown', as
   expect(formatSize(-1)).toBe('?')
 })
 
-test('size column: the toggle swaps dates for sizes, folders are sized with du, an edit re-sizes its folders', { timeoutMs: 20_000 }, async ($, on) => {
+test('size column: the column setting shows sizes, folders are sized with du, an edit re-sizes its folders', { timeoutMs: 20_000, options: { column: 'size' } }, async ($, on) => {
   const ran: Ran = []
   const root = '/home/k/proj'
   const clock = world(on, {
@@ -1065,10 +1076,6 @@ test('size column: the toggle swaps dates for sizes, folders are sized with du, 
   await clock.settle()
   const ui = await $.ui.mount({ plugin: 'filetree', surface: 'terminal', component: 'Pane', requestId: 'filetree', props: paneProps(60) })
   await clock.settle()
-  expect(await texts(ui)).toMatch(STAMP)
-  expect(ran.some(a => a[0] === 'du')).toBe(false)
-  await ui.press({ key: 'size' })
-  await clock.settle()
   const sized = await texts(ui)
   expect(sized).not.toMatch(STAMP)
   expect(sized).toContain(' 1 B')
@@ -1077,12 +1084,7 @@ test('size column: the toggle swaps dates for sizes, folders are sized with du, 
   const before = ran.filter(a => a[0] === 'du').length
   await $.tool.call({ tool: 'Edit', file_path: `${root}/src/a.ts`, old_string: 'a', new_string: 'b' } as any)
   await clock.settle()
-  await ui.press({ key: 'refresh' })
-  await clock.settle()
   expect(ran.filter(a => a[0] === 'du').length).toBeGreaterThan(before)
-  await ui.press({ key: 'size' })
-  await clock.settle()
-  expect(await texts(ui)).toMatch(STAMP)
   await ui.unmount()
 })
 

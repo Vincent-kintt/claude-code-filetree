@@ -35,7 +35,6 @@ export type FileTree = {
   cursor: string
   selected: string
   query: string
-  showHidden: boolean
   showSize: boolean
   dirSizes: Record<string, number>
   git: Record<string, string>

@@ -22,7 +22,6 @@ import {
   parseTheme,
   posix,
   relative,
-  dropBelow,
   useDrives,
   rollCounts,
   replaceChildren,
@@ -86,7 +85,6 @@ let glyphSetting = 'auto'
 let openWithSetting = ''
 let previewed: { path: string; text: string; note: string } | null = null
 let previewRows = 20
-let follow = true
 let followClaude = true
 let scanning: Promise<void> | null = null
 let scanJobs: Job[] = []
@@ -111,7 +109,6 @@ let platform: Promise<'linux' | 'darwin' | 'win32'> | null = null
 let dirty: { root: string; files: Record<string, Change> } = { root: '', files: {} }
 let markId = 0
 let listSeq = 0
-let lastRoot = ''
 let sizeDefault = false
 let sizeEpoch = 0
 let sizeActive = 0
@@ -303,11 +300,10 @@ async function reset($: EngineInterface, root: string, focus = false): Promise<v
   generation += 1
   blink?.cancel()
   blink = null
-  lastRoot = root
   searchIndex = null
   sizeEpoch += 1
   sizeQueue = []
-  await put($, () => ({ ...emptyTree(root), showHidden: prev.showHidden, showSize: prev.root ? prev.showSize : sizeDefault }))
+  await put($, () => ({ ...emptyTree(root), showSize: sizeDefault }))
   const title = `Files: ${root.split('/').pop() || root}`
   if (focus) await $.ui.open({ id: PANE, title, focus: true })
   else if (!noDock) await $.ui.open({ id: PANE, title })
@@ -532,7 +528,6 @@ async function flash($: EngineInterface, tones: Record<string, string>): Promise
 }
 
 async function followCwd($: EngineInterface): Promise<boolean> {
-  if (!follow) return false
   const cwd = await cwdOf($)
   const t = await get($)
   if (t.root === cwd) return false
@@ -1024,14 +1019,12 @@ async function press($: EngineInterface, n: FileNode): Promise<void> {
     await toggle($, n)
     return
   }
-  await openNode($, n)
+  if (n.kind !== 'dir') await openFile($, n.id)
 }
 
 async function openNode($: EngineInterface, n: FileNode): Promise<void> {
-  if (n.kind === 'dir') {
-    follow = false
-    await reset($, n.id)
-  } else await openFile($, n.id)
+  if (n.kind === 'dir') await toggle($, n)
+  else await openFile($, n.id)
 }
 
 async function loadTheme($: EngineInterface): Promise<void> {
@@ -1087,7 +1080,7 @@ export const register: Register = (on, options) => {
   sizeDefault = options?.column === 'size'
   openWithSetting = typeof options?.open === 'string' ? options.open : ''
   on('session.start', async ($, e, next) => {
-    await $.command.register({ name: 'filetree', description: 'Show the file tree; args: [path] (no path = cwd)' })
+    await $.command.register({ name: 'filetree', description: 'Show the file tree of the working directory' })
     const windows = (await $.env.get('OS')) === 'Windows_NT'
     useDrives(windows)
     home = posix(((await $.env.get('HOME')) || (await $.env.get('USERPROFILE')) || '').replace(/[\\/]+$/, ''))
@@ -1109,7 +1102,7 @@ export const register: Register = (on, options) => {
       await setActivities($, cur => cur.map(a => (a.state === 'running' ? { ...a, state: 'failed', label: `${a.kind} interrupted` } : a)))
       await update($, CLAUDE, cur => (cur?.now?.state === 'running' ? { ...cur, now: { ...cur.now, state: 'failed' as const }, touched: cur.touched.filter(x => x.state !== 'reading' && x.state !== 'editing') } : (cur ?? { now: null, touched: [] })))
       const cwd = await cwdOf($)
-      if (!t.root || t.nodes.length === 0 || (follow && t.root !== cwd)) await reset($, cwd)
+      if (!t.root || t.nodes.length === 0 || t.root !== cwd) await reset($, cwd)
       else if (!noDock) await $.ui.open({ id: PANE, title: `Files: ${t.root.split('/').pop() || t.root}` })
     })()
     return next(e)
@@ -1122,12 +1115,9 @@ export const register: Register = (on, options) => {
     if (terminal && !e.presentation.isFullscreen) return { text: 'filetree shows in the sidebar, which needs the fullscreen layout. Run /tui fullscreen, then /filetree.' }
     if (terminal && e.presentation.columns < 110) return { text: 'filetree shows in the sidebar, which needs a terminal at least 110 columns wide. Widen it, then run /filetree.' }
     noDock = false
-    const arg = (e.args ?? '').trim()
     const cwd = await cwdOf($)
-    follow = !arg
-    const root = arg ? resolve(cwd, arg, home) : cwd
-    await reset($, root, true)
-    return { text: `File tree on ${shortPath(root)}${follow ? ' (follows the cwd)' : ''}.` }
+    await reset($, cwd, true)
+    return { text: `File tree on ${shortPath(cwd)}.` }
   })
 
   on('tool.call', async ($, e, next) => {
@@ -1181,7 +1171,7 @@ export const register: Register = (on, options) => {
         queuedReads.push(...reads)
         scheduleScan($, { ...job, actions: proven(pending, results) })
       })()
-      if (follow && /(^|[;&|\s])(cd|pushd|popd)(\s|$)/.test(command)) $.clock.after(400, () => void followCwd($))
+      if (/(^|[;&|\s])(cd|pushd|popd)(\s|$)/.test(command)) $.clock.after(400, () => void followCwd($))
     } else if (file) void touched($, [file], 'orange', showWrites)
     return result
   })
@@ -1263,7 +1253,7 @@ export const register: Register = (on, options) => {
     if (e.source === 'clear' || e.source === 'resume' || e.source === 'fork') {
       void (async () => {
         await loadTheme($)
-        const root = follow || !lastRoot ? await cwdOf($) : lastRoot
+        const root = await cwdOf($)
         const t = await get($)
         if (t.root !== root || t.nodes.length === 0) await reset($, root)
       })()
@@ -1542,27 +1532,6 @@ export const register: Register = (on, options) => {
       )
     }
 
-    const goUp = () =>
-      void (async () => {
-        follow = false
-        await reset($, dirname(t.root))
-      })()
-    const goHome = () =>
-      void (async () => {
-        follow = true
-        await reset($, await cwdOf($))
-      })()
-    const refreshAll = () =>
-      void (async () => {
-        const cur = await get($)
-        searchIndex = null
-        await staleSizes($)
-        await loadDirs($, [cur.root, ...cur.expanded])
-        await detectRepo($)
-        await refreshGit($)
-        if (cur.query.trim()) await search($, cur.query)
-      })()
-    const collapseAll = () => void patch($, cur => ({ expanded: [], nodes: dropBelow(cur.nodes, cur.nodes.filter(x => x.parent === cur.root && x.kind === 'dir').map(x => x.id)) }))
     const rel = (p: string) => (p !== t.root && inside(t.root, p) ? p.slice(t.root.endsWith('/') ? t.root.length : t.root.length + 1) : shortPath(p))
     const tree = (
       <Client
@@ -1646,49 +1615,6 @@ export const register: Register = (on, options) => {
           <Text bold color={theme.accent} wrap="truncate-start">
             {header}
           </Text>
-          <Box flexGrow={1} />
-          <Box flexDirection="row" gap={2}>
-            <Button
-              key="up"
-              plain
-              dimColor
-              label={unicode ? '↑' : '\u{f005d}'}
-              onPress={goUp}
-            />
-            <Button
-              key="cwd"
-              plain
-              dimColor={!follow}
-              label={unicode ? '⌂' : '\u{f02dc}'}
-              onPress={goHome}
-            />
-            <Button
-              key="refresh"
-              plain
-              dimColor
-              label={unicode ? '↻' : '\u{f0450}'}
-              onPress={refreshAll}
-            />
-            <Button
-              key="hidden"
-              plain
-              dimColor={!t.showHidden}
-              label={unicode ? (t.showHidden ? '◉' : '○') : t.showHidden ? '\u{f0208}' : '\u{f0209}'}
-              onPress={() => void patch($, cur => ({ showHidden: !cur.showHidden }))}
-            />
-            <Button
-              key="size"
-              plain
-              dimColor={!t.showSize}
-              label={unicode ? 'Σ' : '\u{f02ca}'}
-              onPress={() => void patch($, cur => ({ showSize: !cur.showSize }))}
-            />
-            <Button key="collapse" plain dimColor label={unicode ? '⊟' : '\u{eac5}'} onPress={collapseAll} />
-            {t.selected && (
-              <Button key="unselect" plain label={unicode ? '⊘' : '\u{f0777}'} onPress={() => void patch($, () => ({ selected: '' }))} />
-            )}
-            <Text> </Text>
-          </Box>
         </Box>
         {branchRow()}
         {!t.top && <Text color={theme.muted}>{unicode ? '± ' : '\u{e702} '}no git repo · git status starts after git init</Text>}
