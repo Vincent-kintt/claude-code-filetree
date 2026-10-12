@@ -26,6 +26,3 @@ export const ADD_COLOR = '#98c379'
 export const DEL_COLOR = '#e06c75'
 export const PRUNE = ['.git', 'node_modules', 'target', '.venv', '__pycache__', 'dist', '.next']
 export const HOME_PRUNE = ['Library', 'AppData', '.Trash']
-export const SIZE_TIMEOUT_MS = 15_000
-export const SIZE_JOBS = 2
-export const SIZE_WALK_LIMIT = 50_000
