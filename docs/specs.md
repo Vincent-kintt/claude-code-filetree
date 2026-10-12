@@ -111,7 +111,7 @@ to them. To install and use the plugin, see the [main README](../README.md).
 | ID | Spec |
 |---|---|
 | APP-01 | In the terminal, `glyphs: auto` uses Nerd Font icons over SSH, or when a Nerd Font is installed and the terminal started after the install. On Windows outside SSH, and always in the Desktop app, it uses plain Unicode. |
-| APP-02 | `icons.ts` maps 28 exact filenames and 64 extensions to icons. |
+| APP-02 | `hooks/ui/icons.ts` maps 28 exact filenames and 64 extensions to icons. |
 | APP-03 | With an Omarchy theme present, the pane takes its colours and background and follows a theme switch within 2 s. A theme installed mid-session is picked up on the next resync. With no theme, nothing is polled. |
 
 ## Version

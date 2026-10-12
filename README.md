@@ -99,7 +99,7 @@ Clicking rows needs herdr 0.9.1 or later. herdr 0.9.0 and older accept pixel mou
 
 ## Contributing
 
-Turn on the pre-commit hook once per clone; it runs `claude plugin validate` and the plugin tests before each commit that touches the plugin:
+Turn on the pre-commit hook once per clone; it runs the layering checks below, `claude plugin validate` and the plugin tests before each commit that touches the plugin:
 
 ```bash
 git config core.hooksPath .githooks
@@ -118,6 +118,25 @@ To check the Desktop layout at narrow widths in headless Chrome (screenshots inc
 ```bash
 node scripts/check-desktop-layout.ts
 ```
+
+### Code layout
+
+```
+hooks/
+  register.tsx   every hook and every call on the host ($); the only module hooks.json lists
+  core/          path and shell helpers, shared constants and types, the session state (rt, settings)
+  features/      one folder per feature: model.ts holds its pure rules, view.tsx draws from a view model
+  ui/            icons, tones, and rows.tsx, the row renderer that runs on the client
+  version.ts     the version, which the pre-commit hook keeps in step with plugin.json
+```
+
+`register.tsx` is long because the host reads it to load the plugin, and every test fails with `hooks module did not load` if it can't:
+
+1. `$` is used only in `register.tsx` and never passed to an imported function. The host follows `$` only into functions declared next to the hooks.
+2. The store keys (`TREE`, `THEME`, `ACTIVITY`, `CLAUDE`) stay literal consts in `register.tsx`. The host lists what the plugin reads and writes from them.
+3. There is one hooks module.
+
+Everything else stays pure, which the pre-commit hook checks: no `$` outside `register.tsx`, no `rt` or `settings` in models or `core/` (bar `core/runtime.ts` and `core/platform.ts`), only type imports from `claude-code` there, and no `await` in views.
 
 ## License
 
