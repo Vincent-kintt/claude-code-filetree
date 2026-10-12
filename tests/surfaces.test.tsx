@@ -402,6 +402,23 @@ test('desktop: the card says what Claude is doing and the touched list keeps eac
   await ui.unmount()
 })
 
+test('desktop: the card keeps the last git action after its footer chip expires', { timeoutMs: 20_000 }, async ($, on) => {
+  const root = '/Users/k/proj'
+  const clock = world(on, { os: 'darwin', env: { HOME: '/Users/k', TMPDIR: '/var/folders/x/T/' }, cwd: root, top: root, dirs: { [root]: [['a.txt', 'file']] }, status: '## main\0', numstat: '' }, [])
+  await $.session.start({ cwd: root, surface: 'desktop', isInteractive: true })
+  await clock.settle()
+  const ui = await $.ui.mount({ plugin: 'filetree', surface: 'desktop', component: 'Pane', requestId: 'filetree', props: paneProps(60) })
+  await $.tool.call({ tool: 'Bash', command: 'git fetch' } as any)
+  await clock.settle()
+  expect(await texts(ui)).toContain('Claude fetched')
+  await clock.advance(60_000)
+  await clock.settle()
+  await ui.post({}, { in: 'rows' })
+  await clock.settle()
+  expect(await texts(ui)).toContain('Claude fetched')
+  await ui.unmount()
+})
+
 test('terminal: the pane keeps its compact layout, without the desktop card', { timeoutMs: 20_000 }, async ($, on) => {
   const root = '/home/k/proj'
   const clock = world(on, { os: 'linux', env: { HOME: '/home/k' }, cwd: root, top: root, dirs: { [root]: [['a.txt', 'file']] }, status: '## main\0', numstat: '' }, [])
@@ -884,7 +901,7 @@ test('desktop: a long file is highlighted up to a cap that keeps the drawing und
   await ui.post({ press: `${root}/big.ts` }, { in: 'rows' })
   await clock.settle()
   const shown = JSON.stringify(await ui.drawn())
-  expect(shown.length).toBeLessThan(100_000)
+  expect(shown.length).toBeLessThanOrEqual(60_000)
   expect(shown).toContain('"type":"Code"')
   expect(shown).toContain('value0 =')
   expect(shown).not.toContain('value1999 =')
@@ -1052,7 +1069,9 @@ test('git activity is only certified by evidence: HEAD for commits, the exit cod
   expect(shown).toContain('fed4321')
   await $.tool.call({ tool: 'Bash', command: 'git push; echo done' } as any)
   await clock.settle()
-  expect(await texts(ui)).toContain('ran git push')
+  shown = await texts(ui)
+  expect(shown).not.toContain('ran git push')
+  expect(shown).not.toContain('pushing')
   await $.tool.call({ tool: 'Bash', command: 'git fetch && git status' } as any)
   await clock.settle()
   expect(await texts(ui)).toContain('fetched')

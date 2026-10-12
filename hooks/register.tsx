@@ -545,7 +545,8 @@ type Pending = { actions: GitAction[]; ids: number[]; command: string; head: str
 type Job = { actions: GitAction[]; since: Since; initRepo: boolean; readOnly: boolean }
 type Background = { p: Pending | null; job: Job; reads: string[]; cwd: string }
 type GitOperation = NonNullable<BuiltinToolResults['Bash']['gitOperation']>
-type Outcome = { state: 'done' | 'failed'; label: string; detail: string }
+// 'unknown' is a command with no evidence of how it went: its chip is taken down.
+type Outcome = { state: 'done' | 'failed' | 'unknown'; label: string; detail: string }
 
 const PROOF: Record<string, (op: GitOperation) => boolean> = {
   push: op => Boolean(op.push),
@@ -595,19 +596,26 @@ async function outcomes($: EngineInterface, p: Pending, ok: boolean, op: GitOper
     }
     if ((op && PROOF[a.verb]?.(op)) || (ok && chain.and)) return { state: 'done', label: a.done, detail: '' }
     if (!ok && chain.and && chain.size === 1) return { state: 'failed', label: `${a.verb} failed`, detail: '' }
-    return { state: 'done', label: `ran ${a.kind}`, detail: '' }
+    return { state: 'unknown', label: '', detail: '' }
   })
 }
 
 async function finishGit($: EngineInterface, p: Pending, results: Outcome[]): Promise<void> {
   const now = await $.clock.now()
+  let last: Activity | undefined
   await setActivities($, cur =>
-    cur.map(a => {
+    cur.flatMap(a => {
       const i = p.ids.indexOf(a.id)
       const result = i < 0 ? undefined : results[i]
-      return result ? { ...a, ...result, at: now } : a
+      if (result?.state === 'unknown') return []
+      if (!result) return [a]
+      last = { ...a, ...result, at: now }
+      return [last]
     }),
   )
+  // The desktop card shows the last git action after its footer chip expires.
+  const settled = last
+  if (settled) await update($, CLAUDE, cur => ({ ...(cur ?? { now: null, touched: [] }), git: settled }))
   $.clock.after(ACTIVITY_TTL_MS + 500, () => void setActivities($, cur => cur.filter(a => a.state === 'running' || a.at > now)))
 }
 
@@ -615,7 +623,7 @@ function failAll(p: Pending): Outcome[] {
   return p.actions.map(a => ({ state: 'failed', label: `${a.verb} failed`, detail: '' }))
 }
 
-// Only actions with evidence they succeeded: a neutral "ran git X" is not proof.
+// Only actions with evidence they succeeded.
 function proven(p: Pending | null, results: Outcome[], cwd: string): GitAction[] {
   if (!p) return []
   return p.actions
@@ -842,13 +850,14 @@ async function reveal($: EngineInterface, paths: string[]): Promise<void> {
 
 async function walk($: EngineInterface, root: string, depth: number, limit: number): Promise<string[]> {
   const out: string[] = []
+  const skip = broad(root) ? [...PRUNE, ...HOME_PRUNE] : PRUNE
   let level = [root]
   for (let d = 0; d < depth && level.length && out.length < limit; d++) {
     const next: string[] = []
     for (const dir of level) {
       for (const n of (await list($, dir)) ?? []) {
         if (n.kind === 'dir') {
-          if (!PRUNE.includes(n.name)) next.push(n.id)
+          if (!skip.includes(n.name)) next.push(n.id)
         } else out.push(n.id)
       }
       if (out.length >= limit) break
@@ -1082,7 +1091,8 @@ function drawnSize(r: RowSpec): number {
 function capRows(specs: RowSpec[], at: number, note: (text: string) => RowSpec): void {
   const size = specs.map(drawnSize)
   if (size.reduce((a, b) => a + b, 0) <= RENDER_CHARS) return
-  const budget = RENDER_CHARS - 2 * drawnSize(note(`  ⋮ ${specs.length.toLocaleString('en')} more rows; search to find the rest`))
+  // Room for the two notes, the list box around the rows and the cursor row's highlight.
+  const budget = RENDER_CHARS - 2 * drawnSize(note(`  ⋮ ${specs.length.toLocaleString('en')} more rows; search to find the rest`)) - 400
   let from = Math.min(Math.max(0, at), specs.length - 1)
   let to = from + 1
   let used = size[from]!
@@ -1106,15 +1116,17 @@ function capRows(specs: RowSpec[], at: number, note: (text: string) => RowSpec):
   if (below) specs.push(note(`  ⋮ ${below.toLocaleString('en')} more rows; search to find the rest`))
 }
 
-// The longest run of whole lines whose JSON form stays within RENDER_CHARS. loadPreview
-// already cuts each line to 2,000 characters, so the first line always fits.
-function cutLines(text: string): string {
-  if (JSON.stringify(text).length <= RENDER_CHARS) return text
+// The longest run of whole lines whose JSON form, with the view's buttons, name, note and
+// path around it, stays within RENDER_CHARS. loadPreview already cuts each line to 2,000
+// characters, so the first line always fits.
+function cutLines(text: string, chrome: number): string {
+  const room = RENDER_CHARS - chrome
+  if (JSON.stringify(text).length <= room) return text
   let used = 2
   let end = 0
   for (const line of text.split('\n')) {
     const cost = JSON.stringify(line).length
-    if (used + cost > RENDER_CHARS) break
+    if (used + cost > room) break
     used += cost
     end += line.length + 1
   }
@@ -1480,7 +1492,7 @@ export const register: Register = (on, options) => {
         // The desktop page refuses a Code or Markdown drawn inside a Client, so the preview is
         // the pane's own tree there; the app scrolls it natively.
         const whole = p?.text ?? ''
-        const cut = cutLines(whole)
+        const cut = cutLines(whole, 1_500 + 2 * JSON.stringify(t.preview).length + JSON.stringify(p?.note ?? '').length)
         const shownLines = cut.split('\n').length - (cut.endsWith('\n') ? 1 : 0)
         const note = [p?.note ?? '', cut.length < whole.length ? `first ${shownLines.toLocaleString('en')} of ${whole.split('\n').length.toLocaleString('en')} lines; Open in app shows the rest` : ''].filter(Boolean).join(' · ')
         const path = t.preview
@@ -1572,7 +1584,7 @@ export const register: Register = (on, options) => {
             : ''
         : loc
           ? ''
-          : n.kind === 'file' && n.mtime > 0
+          : (n.kind === 'file' || (n.kind === 'link' && n.size > 0)) && n.mtime > 0
             ? stamp(n.mtime)
             : ''
       const locText = loc ? `${loc[0] ? ` +${loc[0]}` : ''}${loc[1] ? ` -${loc[1]}` : ''}` : ''
@@ -1665,7 +1677,7 @@ export const register: Register = (on, options) => {
         const d = dirname(p)
         return d === t.root || !inside(t.root, d) ? (d === t.root ? 'in project root' : `in ${shortPath(d)}`) : `in ${rel(d)}`
       }
-      const card = cardOf(log.now, latest, where)
+      const card = cardOf(log.now, latest ?? log.git, where)
       const c = t.counts[t.root] ?? [0, 0, 0]
       const changed = c[0] + c[1] + c[2]
       const summary = !t.top

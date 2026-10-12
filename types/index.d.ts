@@ -74,6 +74,8 @@ export type Now = {
 export type ClaudeLog = {
   now: Now | null
   touched: Touch[]
+  // The last git action that finished, kept for the desktop card after its chip expires.
+  git?: Activity
 }
 
 export type Theme = {
