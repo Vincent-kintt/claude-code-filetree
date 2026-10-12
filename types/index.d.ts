@@ -53,6 +53,28 @@ export type FileTree = {
   scroll: number | null
   preview: string
   previewTop: number
+  view: 'all' | 'edited'
+  changes: Record<string, 'new' | 'mod' | 'del'>
+}
+
+export type Touch = {
+  path: string
+  state: 'reading' | 'read' | 'editing' | 'edited' | 'committed'
+  at: number
+}
+
+export type Now = {
+  verb: 'read' | 'edit' | 'commit'
+  state: 'running' | 'done' | 'failed'
+  path: string
+  count: number
+  detail: string
+  at: number
+}
+
+export type ClaudeLog = {
+  now: Now | null
+  touched: Touch[]
 }
 
 export type Theme = {
@@ -70,6 +92,7 @@ declare module 'claude-code' {
       tree: FileTree
       theme: Theme
       activity: Activity[]
+      claude: ClaudeLog
     }
   }
 }

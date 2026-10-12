@@ -1,7 +1,8 @@
 import { type BuiltinToolResults, type EngineInterface, type Register, type Timer, update } from 'claude-code'
 import { LINUX_LAUNCH, openCommand, openWithCommand } from './open'
 
-import type { Activity, FileNode, FileTree, Theme } from '../types'
+import type { Activity, ClaudeLog, FileNode, FileTree, Now, Theme, Touch } from '../types'
+import { type Card, type DesktopModel, desktopPane, desktopPreview } from './desktop'
 import { BRANCH_ICON, chainOf, type GitAction, gitActions, readOnly, readTargets, resolve, TONES } from './git'
 import type { RowSpec, RowsProps, Seg } from './rows'
 import { CHEVRON_CLOSED, CHEVRON_OPEN, fileIcon, GIT_COLOR } from './icons'
@@ -29,14 +30,25 @@ import {
   stamp,
   toNodes,
   underAny,
+  rowsOf,
   visibleRows,
 } from './tree'
 
 const TREE = { plugin: 'filetree', key: 'tree' } as const
 const THEME = { plugin: 'filetree', key: 'theme' } as const
 const ACTIVITY = { plugin: 'filetree', key: 'activity' } as const
+const CLAUDE = { plugin: 'filetree', key: 'claude' } as const
+// The desktop page refuses a drawing past about 100,000 characters serialized, so the
+// highlighted file stays well under it.
+const RENDER_CHARS = 60_000
+const TOUCH_KEEP = 40
+const TOUCH_SHOWN = 8
 const PANE = 'filetree'
 const SHIMMER = Object.fromEntries(Object.entries(TONES).map(([k, v]) => [k, { bright: v.bright, dim: v.dim }]))
+// The desktop app may be light or dark and says neither, so its shimmer peaks on a deep
+// shade rather than the near-white the terminal's dark background takes.
+const DEEP: Record<string, string> = { orange: '#c2410c', green: '#15803d', teal: '#0f766e', blue: '#1d4ed8', purple: '#7e22ce', cyan: '#0e7490', red: '#b91c1c' }
+const SHIMMER_DESKTOP = Object.fromEntries(Object.entries(TONES).map(([k, v]) => [k, { bright: [v.bright[0] ?? v.solid, v.bright[1] ?? v.solid, v.bright[0] ?? v.solid, DEEP[k] ?? v.solid], dim: v.dim }]))
 const BRANCH_ROW = '#branch'
 const FLASH_MS = 2700
 const RUNNING_MAX_MS = 600_000
@@ -88,6 +100,10 @@ let activityId = 0
 let pointer = true
 let view = { from: 0, max: 0 }
 let nativeScroll = false
+let lastSurface = ''
+// The desktop page can press a Button with a handle from a drawing the engine has already
+// replaced, which no onPress answers; the latest drawing's actions are kept here by key instead.
+let routePress: (key: string) => (() => void) | undefined = () => undefined
 let lastSync = 0
 let noDock = false
 let home = ''
@@ -150,6 +166,22 @@ async function activities($: EngineInterface): Promise<Activity[]> {
 
 async function setActivities($: EngineInterface, fn: (list: Activity[]) => Activity[]): Promise<void> {
   await update($, ACTIVITY, cur => fn(cur ?? []).slice(-6))
+}
+
+async function claudeLog($: EngineInterface): Promise<ClaudeLog> {
+  return (await $.state.get(CLAUDE)).value ?? { now: null, touched: [] }
+}
+
+/** Records what Claude did to `paths` for the desktop card and its touched list. */
+async function record($: EngineInterface, paths: string[], state: Touch['state'] | null, now?: Omit<Now, 'at'>): Promise<void> {
+  const at = await $.clock.now()
+  const list = paths.map(posix)
+  await update($, CLAUDE, cur => {
+    const log = cur ?? { now: null, touched: [] }
+    const rest = log.touched.filter(x => !list.includes(x.path))
+    const touched = state ? [...list.map(path => ({ path, state, at })), ...rest] : rest
+    return { now: now ? { ...now, at } : log.now, touched: touched.slice(0, TOUCH_KEEP) }
+  })
 }
 
 async function list($: EngineInterface, dir: string): Promise<FileNode[] | null> {
@@ -241,6 +273,7 @@ async function readGit($: EngineInterface): Promise<void> {
             untrackedDirs: parsed.untrackedDirs,
             branch: parsed.branch,
             counts: rollCounts(files, root),
+            changes: files,
             diff: rollUp(diff, root),
           }
         : {},
@@ -705,6 +738,8 @@ async function afterBash($: EngineInterface, jobs: Job[]): Promise<void> {
     const present = new Set((await get($)).nodes.map(n => n.id))
     const touchTone = actions.find(a => !['commit', 'push', 'add'].includes(a.verb))?.tone ?? 'orange'
     if (showWrites) for (const id of hits) if (present.has(id)) tones[id] = touchTone
+    const edited = hits.filter(id => present.has(id))
+    if (showWrites && edited.length) await record($, edited, 'edited', { verb: 'edit', state: 'done', path: edited[0] ?? '', count: edited.length, detail: '' })
   }
   if (showReads) {
     const found: string[] = []
@@ -716,6 +751,7 @@ async function afterBash($: EngineInterface, jobs: Job[]): Promise<void> {
       await revealPaths($, found)
       const shown = new Set((await get($)).nodes.map(n => n.id))
       for (const r of found) if (shown.has(r) && !tones[r]) tones[r] = 'purple'
+      await record($, found, 'read', { verb: 'read', state: 'done', path: found[0] ?? '', count: found.length, detail: '' })
     }
   }
   if (showWrites && actions.length) {
@@ -726,6 +762,10 @@ async function afterBash($: EngineInterface, jobs: Job[]): Promise<void> {
       await revealPaths($, paths)
       const shown = new Set((await get($)).nodes.map(n => n.id))
       for (const x of paths) if (shown.has(x)) tones[x] = 'green'
+      if (committed && paths.length) {
+        const sha = [...(await activities($))].reverse().find(a => a.kind === 'git commit' && a.state === 'done')?.detail ?? ''
+        await record($, paths, 'committed', { verb: 'commit', state: 'done', path: paths[0] ?? '', count: paths.length, detail: sha })
+      }
     }
     const pushLike = actions.find(a => ['push', 'pull', 'fetch', 'checkout', 'switch', 'branch', 'merge', 'rebase', 'tag'].includes(a.verb) || a.kind.startsWith('gh '))
     if (pushLike) tones[BRANCH_ROW] = pushLike.tone
@@ -951,7 +991,10 @@ function previewLines(text: string, top: number, rows: number, markdown: boolean
 }
 
 async function openFile($: EngineInterface, path: string, external = false): Promise<void> {
-  if (!external && openWithSetting.trim() === 'preview') return showPreview($, path)
+  // The desktop app opens a file in the pane by default: its default app is an editor
+  // outside the conversation, and the pane's preview has a way back to the tree.
+  const setting = openWithSetting.trim()
+  if (!external && (setting === 'preview' || (!setting && lastSurface === 'desktop'))) return showPreview($, path)
   const os = await osName($)
   const native = (p: string) => (os === 'win32' ? p.replace(/\//g, '\\') : p)
   const custom = external ? null : openWithCommand(openWithSetting, native(path), native(dirname(path)))
@@ -1006,6 +1049,31 @@ async function loadTheme($: EngineInterface): Promise<void> {
   }
 }
 
+/** The desktop card: what Claude is doing, else the last thing it did, a git action or a file. */
+function cardOf(now: Now | null, git: Activity | undefined, where: (p: string) => string): Card {
+  const gitRunning = git?.state === 'running'
+  const nowRunning = now?.state === 'running'
+  if (git && (!now || (gitRunning !== nowRunning ? gitRunning : git.at >= now.at))) {
+    const phase = git.state === 'running' ? 'RIGHT NOW' : git.state === 'failed' ? 'FAILED' : 'DONE'
+    const title = git.state === 'running' ? `Claude is ${git.label}` : git.state === 'failed' ? `Claude's ${git.label}` : `Claude ${git.label}`
+    const icon = git.state === 'failed' ? 'x' : git.state === 'done' && git.kind === 'git commit' ? 'check' : 'git'
+    return { tone: git.state === 'failed' ? 'red' : git.tone, phase, title, sub: git.detail, icon, live: git.state === 'running' }
+  }
+  if (!now) return { tone: '', phase: 'IDLE', title: 'Waiting for Claude', sub: 'What Claude reads, edits and commits shows here', icon: 'idle', live: false }
+  const name = now.path.split('/').pop() || now.path
+  const what = now.count > 1 ? `${now.count} files` : name
+  const sub = now.verb === 'commit' ? now.detail : now.count > 1 ? `${where(now.path)} and more` : where(now.path)
+  if (now.state === 'failed') {
+    const title = now.verb === 'read' ? `Claude couldn't read ${name}` : now.verb === 'edit' ? `Claude's edit to ${name} failed` : 'Claude’s commit failed'
+    return { tone: 'red', phase: 'FAILED', title, sub, icon: 'x', live: false }
+  }
+  const running = now.state === 'running'
+  const phase = running ? 'RIGHT NOW' : 'DONE'
+  if (now.verb === 'read') return { tone: 'purple', phase, title: running ? `Claude is reading ${name}` : `Claude read ${what}`, sub, icon: 'eye', live: running }
+  if (now.verb === 'edit') return { tone: 'orange', phase, title: running ? `Claude is editing ${name}` : `Claude edited ${what}`, sub, icon: 'pencil', live: running }
+  return { tone: 'green', phase, title: `Claude committed ${now.count} ${now.count === 1 ? 'file' : 'files'}`, sub, icon: 'check', live: false }
+}
+
 function shortPath(path: string): string {
   return home && inside(home, path) ? `~${path.slice(home.length)}` : path
 }
@@ -1039,6 +1107,7 @@ export const register: Register = (on, options) => {
       if (t.flashOn) await patch($, () => ({ flash: [], flashDim: [], flashOn: false, flashTones: {} }))
       if (t.preview) await patch($, () => ({ preview: '', previewTop: 0 }))
       await setActivities($, cur => cur.map(a => (a.state === 'running' ? { ...a, state: 'failed', label: `${a.kind} interrupted` } : a)))
+      await update($, CLAUDE, cur => (cur?.now?.state === 'running' ? { ...cur, now: { ...cur.now, state: 'failed' as const }, touched: cur.touched.filter(x => x.state !== 'reading' && x.state !== 'editing') } : (cur ?? { now: null, touched: [] })))
       const cwd = await cwdOf($)
       if (!t.root || t.nodes.length === 0 || (follow && t.root !== cwd)) await reset($, cwd)
       else if (!noDock) await $.ui.open({ id: PANE, title: `Files: ${t.root.split('/').pop() || t.root}` })
@@ -1065,6 +1134,15 @@ export const register: Register = (on, options) => {
     if (e.tool !== 'Edit' && e.tool !== 'Write' && e.tool !== 'NotebookEdit' && e.tool !== 'Bash') return next(e)
     const command = e.tool === 'Bash' ? e.command : ''
     const cwd = e.tool === 'Bash' ? await cwdOf($) : ''
+    const file =
+      'file_path' in e && typeof e.file_path === 'string'
+        ? posix(e.file_path)
+        : 'notebook_path' in e && typeof e.notebook_path === 'string'
+          ? posix(e.notebook_path)
+          : ''
+    const was = file && showWrites ? (await claudeLog($)).touched.find(x => x.path === file) : undefined
+    const editing = (state: Now['state']) => ({ verb: 'edit' as const, state, path: file, count: 1, detail: '' })
+    if (file && showWrites) await record($, [file], 'editing', editing('running'))
     const actions = gitActions(command)
     const quiet = !actions.length && readOnly(command)
     const since = await sinceNow($, e.tool === 'Bash' && !quiet)
@@ -1075,6 +1153,7 @@ export const register: Register = (on, options) => {
     try {
       result = await next(e)
     } catch (err) {
+      if (file && showWrites) await record($, [file], was?.state ?? null, editing('failed'))
       if (pending) await finishGit($, pending, failAll(pending))
       if (since.mark) void $.process.run(['rm', '-f', since.mark], { timeoutMs: 3_000 }).catch(() => undefined)
       throw err
@@ -1082,6 +1161,10 @@ export const register: Register = (on, options) => {
     if (pending && result.deny) {
       const ids = pending.ids
       void setActivities($, cur => cur.filter(a => !ids.includes(a.id)))
+    }
+    if (file && showWrites) {
+      const ok = !result.deny && !result.isError
+      await record($, [file], ok ? 'edited' : (was?.state ?? null), editing(ok ? 'done' : 'failed'))
     }
     if (result.deny || (result.isError && e.tool !== 'Bash')) {
       if (since.mark) void $.process.run(['rm', '-f', since.mark], { timeoutMs: 3_000 }).catch(() => undefined)
@@ -1099,28 +1182,32 @@ export const register: Register = (on, options) => {
         scheduleScan($, { ...job, actions: proven(pending, results) })
       })()
       if (follow && /(^|[;&|\s])(cd|pushd|popd)(\s|$)/.test(command)) $.clock.after(400, () => void followCwd($))
-    } else {
-      const file =
-        'file_path' in e && typeof e.file_path === 'string'
-          ? e.file_path
-          : 'notebook_path' in e && typeof e.notebook_path === 'string'
-            ? e.notebook_path
-            : ''
-      if (file) void touched($, [file], 'orange', showWrites)
-    }
+    } else if (file) void touched($, [file], 'orange', showWrites)
     return result
   })
 
   on('tool.call', { tool: 'Read' }, async ($, e, next) => {
-    const result = await next(e)
-    if (result.deny || result.isError || e.tool !== 'Read' || !showReads) return result
-    void touched($, [posix(e.file_path)], 'purple', true)
+    if (e.tool !== 'Read' || !showReads) return next(e)
+    const file = posix(e.file_path)
+    const was = (await claudeLog($)).touched.find(x => x.path === file)
+    await record($, [file], 'reading', { verb: 'read', state: 'running', path: file, count: 1, detail: '' })
+    let result: Awaited<ReturnType<typeof next>>
+    try {
+      result = await next(e)
+    } catch (err) {
+      await record($, [file], was?.state ?? null, { verb: 'read', state: 'failed', path: file, count: 1, detail: '' })
+      throw err
+    }
+    const ok = !result.deny && !result.isError
+    await record($, [file], ok ? 'read' : (was?.state ?? null), { verb: 'read', state: ok ? 'done' : 'failed', path: file, count: 1, detail: '' })
+    if (ok) void touched($, [file], 'purple', true)
     return result
   })
 
   on('ui.message', async ($, e, next) => {
     if (e.requestId !== PANE || e.element !== 'rows' || !e.data || typeof e.data !== 'object') return next(e)
     const data = e.data as { press?: unknown; key?: unknown; ctrl?: unknown; shift?: unknown; scrollTo?: unknown; copy?: unknown }
+    lastSurface = e.surface
     void sync($)
     const t = await get($)
     if (typeof data.copy === 'string') {
@@ -1133,7 +1220,7 @@ export const register: Register = (on, options) => {
       return {}
     }
     if (typeof data.press === 'string') {
-      const n = t.nodes.find(x => x.id === data.press)
+      const n = t.nodes.find(x => x.id === data.press) ?? rowsOf(t).find(r => r.node.id === data.press)?.node
       if (!n) return {}
       if (t.scroll === null) await patch($, () => ({ scroll: view.from }))
       if (data.ctrl || data.shift) await openNode($, n)
@@ -1148,7 +1235,7 @@ export const register: Register = (on, options) => {
       else if (data.key in by) await scrollPreview($, by[data.key] ?? 0)
       return {}
     }
-    const rows = visibleRows(t)
+    const rows = rowsOf(t)
     const at = rows.findIndex(r => r.node.id === t.cursor)
     const cur = rows[at]?.node
     const move = (d: number) => {
@@ -1248,6 +1335,13 @@ export const register: Register = (on, options) => {
     return next(e)
   })
 
+  on('ui.press', { component: 'Pane', requestId: PANE }, async ($, e, next) => {
+    const run = e.surface === 'desktop' ? routePress(e.element) : undefined
+    if (!run) return next(e)
+    run()
+    return { element: e.element }
+  })
+
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e, next) => {
     if (e.surface !== 'terminal' && e.surface !== 'desktop') return next(e)
     if (e.surface === 'terminal' && e.props.placement === 'inline') {
@@ -1263,6 +1357,10 @@ export const register: Register = (on, options) => {
     // The desktop tab never hands the wheel or the scrollbar drag to the pane, so
     // there it draws every row and lets the engine scroll the body.
     nativeScroll = e.surface === 'desktop'
+    // A translucent accent reads on both of the desktop app's themes; the terminal keeps the theme's selection.
+    const rowColors = nativeScroll
+      ? { activeBg: `${theme.accent}38`, hoverBg: '#8080801f', tones: SHIMMER_DESKTOP }
+      : { activeBg: theme.selection, hoverBg: faint(theme.selection), tones: SHIMMER }
     if (t.preview) {
       if (previewed?.path !== t.preview) await loadPreview($, t.preview)
       const p = previewed
@@ -1271,6 +1369,18 @@ export const register: Register = (on, options) => {
       previewRows = nativeScroll ? all : Math.max(4, (e.props.scroll?.bodyRows ?? 40) - (p?.note ? 2 : 1))
       const win = previewLines(p?.text ?? '', nativeScroll ? 0 : Math.min(t.previewTop, Math.max(0, all - previewRows)), previewRows, markdown)
       const name = t.preview !== t.root && inside(t.root, t.preview) ? relative(t.root, t.preview) : shortPath(t.preview)
+      if (e.surface === 'desktop') {
+        // The desktop page refuses a Code or Markdown drawn inside a Client, so the preview is
+        // the pane's own tree there; the app scrolls it natively.
+        const whole = p?.text ?? ''
+        const cut = whole.length > RENDER_CHARS ? whole.slice(0, whole.lastIndexOf('\n', RENDER_CHARS) + 1 || RENDER_CHARS) : whole
+        const shownLines = cut.split('\n').length
+        const note = [p?.note ?? '', cut.length < whole.length ? `first ${shownLines.toLocaleString('en')} of ${whole.split('\n').length.toLocaleString('en')} lines; Open in app shows the rest` : ''].filter(Boolean).join(' · ')
+        const path = t.preview
+        const actions = { back: () => void closePreview($), external: () => void openFile($, path, true) }
+        routePress = key => (key === 'back' ? actions.back : key === 'external' ? actions.external : undefined)
+        return desktopPreview($.ui.resolve(e), { name, note, markdown, text: cut, path }, actions, theme.muted)
+      }
       return (
         <Box flexDirection="column" minHeight={Math.max(1, e.props.scroll?.bodyRows ?? 1)} backgroundColor={theme.bg || undefined}>
           <Box flexDirection="row">
@@ -1285,7 +1395,7 @@ export const register: Register = (on, options) => {
           <Client
             key="rows"
             module="./rows.tsx"
-            props={{ rows: [], active: '', activeBg: theme.selection, hoverBg: faint(theme.selection), tones: SHIMMER, pointer: false, preview: { text: win.text, path: t.preview, startLine: win.top + 1, markdown } } satisfies RowsProps}
+            props={{ rows: [], active: '', ...rowColors, pointer: false, preview: { text: win.text, path: t.preview, startLine: win.top + 1, markdown } } satisfies RowsProps}
           />
         </Box>
       )
@@ -1298,7 +1408,7 @@ export const register: Register = (on, options) => {
     const ignored = new Set(t.ignored)
     const untracked = new Set(t.untrackedDirs)
     const width = Math.max(24, e.props.bodyColumns)
-    const rows = visibleRows(t)
+    const rows = rowsOf(t)
     const fixed = 2 + (t.top ? (t.branch ? 1 : 0) : 1) + (t.selected || latest ? 1 : 0)
     const room = nativeScroll ? Math.max(1, rows.length) : Math.max(5, (e.props.scroll?.bodyRows ?? 40) - fixed)
     const isLit = (id: string) => bright.has(id) || dimmed.has(id)
@@ -1355,7 +1465,7 @@ export const register: Register = (on, options) => {
             : ''
         : loc
           ? ''
-          : n.kind === 'file'
+          : n.kind === 'file' && n.mtime > 0
             ? stamp(n.mtime)
             : ''
       const locText = loc ? `${loc[0] ? ` +${loc[0]}` : ''}${loc[1] ? ` -${loc[1]}` : ''}` : ''
@@ -1432,6 +1542,88 @@ export const register: Register = (on, options) => {
       )
     }
 
+    const goUp = () =>
+      void (async () => {
+        follow = false
+        await reset($, dirname(t.root))
+      })()
+    const goHome = () =>
+      void (async () => {
+        follow = true
+        await reset($, await cwdOf($))
+      })()
+    const refreshAll = () =>
+      void (async () => {
+        const cur = await get($)
+        searchIndex = null
+        await staleSizes($)
+        await loadDirs($, [cur.root, ...cur.expanded])
+        await detectRepo($)
+        await refreshGit($)
+        if (cur.query.trim()) await search($, cur.query)
+      })()
+    const collapseAll = () => void patch($, cur => ({ expanded: [], nodes: dropBelow(cur.nodes, cur.nodes.filter(x => x.parent === cur.root && x.kind === 'dir').map(x => x.id)) }))
+    const rel = (p: string) => (p !== t.root && inside(t.root, p) ? p.slice(t.root.endsWith('/') ? t.root.length : t.root.length + 1) : shortPath(p))
+    const tree = (
+      <Client
+        key="rows"
+        module="./rows.tsx"
+        props={{ rows: specs, active: t.cursor, ...rowColors, pointer, ...(bar ? { bar } : {}) } satisfies RowsProps}
+      />
+    )
+
+    if (e.surface === 'desktop') {
+      const log = await claudeLog($)
+      const where = (p: string) => {
+        const d = dirname(p)
+        return d === t.root || !inside(t.root, d) ? (d === t.root ? 'in project root' : `in ${shortPath(d)}`) : `in ${rel(d)}`
+      }
+      const card = cardOf(log.now, latest, where)
+      const c = t.counts[t.root] ?? [0, 0, 0]
+      const changed = c[0] + c[1] + c[2]
+      const summary = !t.top
+        ? { text: '', add: 0, del: 0 }
+        : changed === 0 && totals[0] === 0 && totals[1] === 0
+          ? { text: 'clean, nothing changed', add: 0, del: 0 }
+          : { text: changed ? `${changed} changed` : 'changed', add: totals[0], del: totals[1] }
+      const mine = log.touched.filter(x => inside(t.root, x.path) && x.path !== t.root)
+      const model: DesktopModel = {
+        card,
+        branch: t.top && t.branch ? { head: t.branch.head, upstream: t.branch.upstream, ahead: t.branch.ahead, behind: t.branch.behind } : null,
+        summary,
+        noRepo: !t.top,
+        query: t.query,
+        view: t.view,
+        edited: Object.keys(t.changes).filter(p => p !== t.root && inside(t.root, p)).length,
+        selected: t.selected ? rel(t.selected) : '',
+        touched: mine.slice(0, TOUCH_SHOWN).map(x => {
+          const d = dirname(x.path)
+          return { path: x.path, name: x.path.split('/').pop() ?? x.path, dir: d === t.root ? '' : rel(d), state: x.state }
+        }),
+        more: Math.max(0, mine.length - TOUCH_SHOWN),
+        project: header,
+        muted: theme.muted,
+      }
+      const openTouch = (path: string) =>
+        void (async () => {
+          if (!(await exists($, path))) return
+          await reveal($, [path])
+          await patch($, () => ({ selected: path, cursor: path }))
+        })()
+      routePress = key => (key.startsWith('touch:') ? () => openTouch(key.slice(6)) : undefined)
+      return desktopPane(
+        $.ui.resolve(e),
+        model,
+        {
+          search: v => void search($, v),
+          jump: v => void jump($, v),
+          setView: v => void patch($, () => ({ view: v, scroll: null })),
+          openTouch,
+        },
+        tree,
+      )
+    }
+
     const chip = (a: Activity) => {
       const tone = a.state === 'failed' ? 'red' : a.tone
       const color = TONES[tone]?.solid ?? theme.accent
@@ -1461,41 +1653,21 @@ export const register: Register = (on, options) => {
               plain
               dimColor
               label={unicode ? '↑' : '\u{f005d}'}
-              onPress={() =>
-                void (async () => {
-                  follow = false
-                  await reset($, dirname(t.root))
-                })()
-              }
+              onPress={goUp}
             />
             <Button
               key="cwd"
               plain
               dimColor={!follow}
               label={unicode ? '⌂' : '\u{f02dc}'}
-              onPress={() =>
-                void (async () => {
-                  follow = true
-                  await reset($, await cwdOf($))
-                })()
-              }
+              onPress={goHome}
             />
             <Button
               key="refresh"
               plain
               dimColor
               label={unicode ? '↻' : '\u{f0450}'}
-              onPress={() =>
-                void (async () => {
-                  const cur = await get($)
-                  searchIndex = null
-                  await staleSizes($)
-                  await loadDirs($, [cur.root, ...cur.expanded])
-                  await detectRepo($)
-                  await refreshGit($)
-                  if (cur.query.trim()) await search($, cur.query)
-                })()
-              }
+              onPress={refreshAll}
             />
             <Button
               key="hidden"
@@ -1511,7 +1683,7 @@ export const register: Register = (on, options) => {
               label={unicode ? 'Σ' : '\u{f02ca}'}
               onPress={() => void patch($, cur => ({ showSize: !cur.showSize }))}
             />
-            <Button key="collapse" plain dimColor label={unicode ? '⊟' : '\u{eac5}'} onPress={() => void patch($, cur => ({ expanded: [], nodes: dropBelow(cur.nodes, cur.nodes.filter(x => x.parent === cur.root && x.kind === 'dir').map(x => x.id)) }))} />
+            <Button key="collapse" plain dimColor label={unicode ? '⊟' : '\u{eac5}'} onPress={collapseAll} />
             {t.selected && (
               <Button key="unselect" plain label={unicode ? '⊘' : '\u{f0777}'} onPress={() => void patch($, () => ({ selected: '' }))} />
             )}
@@ -1535,11 +1707,7 @@ export const register: Register = (on, options) => {
           </Box>
           {t.query ? <Button key="clear" plain dimColor label={unicode ? '×' : '\u{f0156}'} onPress={() => void search($, '')} /> : null}
         </Box>
-        <Client
-          key="rows"
-          module="./rows.tsx"
-          props={{ rows: specs, active: t.cursor, activeBg: theme.selection, hoverBg: faint(theme.selection), tones: SHIMMER, pointer, ...(bar ? { bar } : {}) } satisfies RowsProps}
-        />
+        {tree}
         <Box flexGrow={1} />
         {(t.selected || latest) && (
           <Box flexDirection="row">

@@ -41,6 +41,8 @@ export function emptyTree(root: string): FileTree {
     scroll: null,
     preview: '',
     previewTop: 0,
+    view: 'all',
+    changes: {},
   }
 }
 
@@ -329,4 +331,45 @@ export function formatSize(bytes: number): string {
     i++
   }
   return `${v < 100 ? v.toFixed(1) : Math.round(v)} ${units[i]}`
+}
+
+/** The rows the tree shows: every loaded row, or in the edited view only what git reports changed and its folders. */
+export function rowsOf(t: FileTree): Row[] {
+  return t.view === 'edited' ? changedRows(t) : visibleRows(t)
+}
+
+/** Changed files (added, modified, deleted) under the root, each with its folders, every folder open. */
+export function changedRows(t: FileTree): Row[] {
+  const q = t.query.trim().toLowerCase()
+  const known = new Map(t.nodes.map(n => [n.id, n]))
+  const kids = new Map<string, FileNode[]>()
+  const seen = new Set<string>()
+  const add = (n: FileNode) => {
+    if (seen.has(n.id)) return
+    seen.add(n.id)
+    const list = kids.get(n.parent)
+    if (list) list.push(n)
+    else kids.set(n.parent, [n])
+  }
+  const node = (id: string, kind: 'dir' | 'file'): FileNode => {
+    const name = id.slice(id.lastIndexOf('/') + 1)
+    return known.get(id) ?? { id, parent: dirname(id), name, kind, hidden: name.startsWith('.'), mtime: 0, size: 0, loaded: false }
+  }
+  for (const path of Object.keys(t.changes)) {
+    if (path === t.root || !inside(t.root, path)) continue
+    if (q && !relative(t.root, path).toLowerCase().includes(q)) continue
+    for (const a of ancestorsOf(path, t.root)) add(node(a, 'dir'))
+    add(node(path, 'file'))
+  }
+  const rows: Row[] = []
+  const walk = (dir: string, depth: number) => {
+    const list = (kids.get(dir) ?? []).sort((a, b) => (a.kind === 'dir' ? 0 : 1) - (b.kind === 'dir' ? 0 : 1) || collator.compare(a.name, b.name))
+    for (const n of list) {
+      const isOpen = n.kind === 'dir' && kids.has(n.id)
+      rows.push({ node: n, depth, open: isOpen })
+      if (isOpen) walk(n.id, depth + 1)
+    }
+  }
+  walk(t.root, 0)
+  return rows
 }
