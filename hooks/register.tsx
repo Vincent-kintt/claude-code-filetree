@@ -1,5 +1,4 @@
 import { type BuiltinToolResults, type EngineInterface, type Register, type ResultOf, update } from 'claude-code'
-import { LINUX_LAUNCH, openCommand, openWithCommand } from './open'
 
 import type { Activity, ClaudeLog, FileNode, FileTree, Now, Theme, Touch } from '../types'
 import { type Card, type DesktopModel, desktopPane, desktopPreview } from './desktop'
@@ -16,23 +15,17 @@ import {
   emptyTree,
   formatSize,
   inside,
-  isAbsolute,
   join,
-  mapper,
   parseGit,
-  parseNumstat,
   parseTheme,
   posix,
   relative,
   useDrives,
-  rollCounts,
   replaceChildren,
-  rollUp,
   stamp,
   toNodes,
   underAny,
   rowsOf,
-  SEARCH_REVEAL_LIMIT,
   visibleRows,
 } from './tree'
 import {
@@ -41,23 +34,17 @@ import {
   BRANCH_ROW,
   DATE_MIN_COLUMNS,
   DEL_COLOR,
-  DOUBLE_MS,
   FIND_LIMIT,
   FLASH_MS,
   FONT_SCRIPT,
-  HOME_PRUNE,
   MIN_COLUMNS,
   NO_REPO_DEPTH,
   PANE,
-  PRUNE,
   READ_REVEAL_LIMIT,
   RENDER_CHARS,
   RUNNING_MAX_MS,
   SHIMMER,
   SHIMMER_DESKTOP,
-  SIZE_JOBS,
-  SIZE_TIMEOUT_MS,
-  SIZE_WALK_LIMIT,
   THEME_FILE,
   THEME_POLL_MS,
   TOUCH_KEEP,
@@ -66,6 +53,12 @@ import {
 import { broad, pruneArgs, rootOfDisk, shortPath } from './core/platform'
 import { rt, settings } from './core/runtime'
 import type { GitOperation, Job, OS, Outcome, Pending, Since } from './core/types'
+import { changedArgv, dirtySplit, foundPaths, markPath, scopedIgnored } from './features/changes/model'
+import { assembleGit, gitdirRef, gitPathsArgs, mapGitPaths, othersArgs, parseHead, parseRevParse, watchFiles } from './features/git-status/model'
+import { entryOf, freshListings, linkEntry, listError, missingDirs, openDirs } from './features/listing/model'
+import { copyText, openFailed, openPlan, openSetting, pressOf, togglePatch } from './features/open/model'
+import { findFilesArgv, indexedPaths, listDepth, matches, searchTerm, staleDirs, walkSkip } from './features/search/model'
+import { enqueue, keptSizes, parseDu, SIZE_JOBS, SIZE_TIMEOUT_MS, sizePatch, stillWanted, tallyDir } from './features/sizes/model'
 
 // The host lists what a module reads and writes from these literals, so they stay in this file.
 const TREE = { plugin: 'filetree', key: 'tree' } as const
@@ -157,14 +150,11 @@ async function list($: EngineInterface, dir: string): Promise<FileNode[] | null>
     const entries = await $.fs.list(dir)
     const resolved = await Promise.all(
       entries.map(async e => {
-        if (!e.isLink) return { name: e.name, kind: e.kind, mtimeMs: e.mtimeMs, size: e.size, isLink: false }
+        if (!e.isLink) return entryOf(e)
         try {
-          const target = await $.fs.stat(join(dir, e.name))
-          return target.kind === 'dir'
-            ? { name: e.name, kind: 'dir' as const, mtimeMs: target.mtimeMs, size: 0, isLink: false }
-            : { name: e.name, kind: 'file' as const, mtimeMs: target.mtimeMs, size: target.size, isLink: true }
+          return linkEntry(e.name, await $.fs.stat(join(dir, e.name)))
         } catch {
-          return { name: e.name, kind: 'other' as const, mtimeMs: 0, size: 0, isLink: true }
+          return linkEntry(e.name, null)
         }
       }),
     )
@@ -174,7 +164,7 @@ async function list($: EngineInterface, dir: string): Promise<FileNode[] | null>
     if (!(await exists($, dir))) return []
     if (!rt.unreadable.has(dir)) {
       rt.unreadable.add(dir)
-      $.ui.toast(`could not list ${shortPath(dir)}: ${err instanceof Error ? err.message : String(err)}`)
+      $.ui.toast(listError(shortPath(dir), err))
     }
     return null
   }
@@ -185,12 +175,8 @@ async function loadDirs($: EngineInterface, dirs: string[]): Promise<Map<string,
   const seq = ++rt.listSeq
   for (const dir of dirs) rt.listLatest.set(dir, seq)
   const results = await Promise.all(dirs.map(async dir => [dir, await list($, dir)] as const))
-  const listed = new Map<string, FileNode[]>()
-  for (const [dir, kids] of results) {
-    if (rt.listLatest.get(dir) !== seq) continue
-    rt.listLatest.delete(dir)
-    if (kids) listed.set(dir, kids)
-  }
+  const { listed, done } = freshListings(results, rt.listLatest, seq)
+  for (const dir of done) rt.listLatest.delete(dir)
   await patch($, t => (t.root === root ? { nodes: replaceChildren(t.nodes, listed) } : {}))
   return listed
 }
@@ -198,16 +184,14 @@ async function loadDirs($: EngineInterface, dirs: string[]): Promise<Map<string,
 async function detectRepo($: EngineInterface): Promise<void> {
   const t = await get($)
   if (!t.root) return
-  let top = ''
-  let prefix = ''
+  let found = { top: '', prefix: '' }
   try {
     const run = await git($, t.root, ['rev-parse', '--show-prefix', '--show-toplevel'], 5_000)
-    const [p = '', tl = ''] = run.exitCode === 0 ? run.stdout.split('\n') : []
-    prefix = p.trim()
-    top = tl.trim()
+    found = parseRevParse(run.exitCode, run.stdout)
   } catch {
-    top = ''
+    // No git: not a repo.
   }
+  const { top, prefix } = found
   await patch($, cur => (cur.root === t.root ? { top, prefix } : {}))
 }
 
@@ -219,29 +203,11 @@ async function readGit($: EngineInterface): Promise<void> {
     const status = await git($, root, ['status', '--porcelain=v1', '-b', '-z', '--ignored=traditional', '--untracked-files=normal', '--', '.'])
     if (status.exitCode !== 0) return
     const parsed = parseGit(status.stdout, root, t.prefix)
-    const diff: Record<string, [number, number]> = {}
     const head = await git($, root, ['diff', 'HEAD', '--numstat', '-z', '--', '.'])
-    if (head.exitCode === 0) parseNumstat(head.stdout, root, t.prefix, diff)
-    const files = { ...parsed.files }
-    if (parsed.untrackedDirs.length) {
-      const others = await git($, root, ['ls-files', '-o', '--exclude-standard', '-z', '--', ...parsed.untrackedDirs.map(d => d.slice(root.length + 1) || '.')])
-      if (others.exitCode === 0) for (const rel of others.stdout.split('\0').filter(Boolean)) files[join(root, rel)] = 'new'
-    }
-    for (const path of Object.keys(diff)) if (files[path] === 'new') delete diff[path]
+    const others = parsed.untrackedDirs.length ? await git($, root, othersArgs(parsed.untrackedDirs, root)) : null
+    const { files, patch: found } = assembleGit(parsed, head.exitCode === 0 ? head.stdout : null, others?.exitCode === 0 ? others.stdout : null, root, t.prefix)
     rt.dirty = { root, files }
-    await patch($, cur =>
-      cur.root === root
-        ? {
-            git: parsed.git,
-            ignored: parsed.ignored,
-            untrackedDirs: parsed.untrackedDirs,
-            branch: parsed.branch,
-            counts: rollCounts(files, root),
-            changes: files,
-            diff: rollUp(diff, root),
-          }
-        : {},
-    )
+    await patch($, cur => (cur.root === root ? found : {}))
   } catch {
     return
   }
@@ -283,18 +249,7 @@ async function reset($: EngineInterface, root: string, focus = false): Promise<v
 async function revealPaths($: EngineInterface, paths: string[]): Promise<void> {
   const tried = new Set<string>()
   for (let pass = 0; pass < 32; pass++) {
-    const t = await get($)
-    const loaded = new Set(t.nodes.filter(n => n.loaded).map(n => n.id))
-    if (t.nodes.some(n => n.parent === t.root)) loaded.add(t.root)
-    const need = new Set<string>()
-    for (const p of paths) {
-      for (const dir of [t.root, ...ancestorsOf(p, t.root).reverse()]) {
-        if (!loaded.has(dir)) {
-          if (!tried.has(dir)) need.add(dir)
-          break
-        }
-      }
-    }
+    const need = missingDirs(await get($), paths, tried)
     if (need.size === 0) return
     for (const dir of need) tried.add(dir)
     await loadDirs($, [...need])
@@ -316,10 +271,9 @@ async function newer($: EngineInterface, paths: string[], sinceMs: number): Prom
 
 async function changedSince($: EngineInterface, root: string, since: Since, depth: number, ignored: string[] = []): Promise<string[]> {
   if (rootOfDisk(root)) return []
-  const test = since.mark ? ['-newer', since.mark] : ['-newermt', `@${(since.ms / 1000).toFixed(3)}`]
   try {
-    const run = await $.process.run(['find', '-H', root, '-xdev', ...(depth ? ['-maxdepth', String(depth)] : []), ...pruneArgs(root, ignored.filter(p => inside(root, p)).slice(0, 40)), ...test, '-print0'], { timeoutMs: 8_000 })
-    return run.stdout.split('\0').filter(p => p && p !== root)
+    const run = await $.process.run(changedArgv(root, since, depth, pruneArgs(root, scopedIgnored(root, ignored))), { timeoutMs: 8_000 })
+    return foundPaths(run.stdout, root)
   } catch {
     return []
   }
@@ -327,18 +281,16 @@ async function changedSince($: EngineInterface, root: string, since: Since, dept
 
 async function changedInRepo($: EngineInterface, root: string, since: Since, before: Record<string, Change>, ignored: string[]): Promise<{ hits: string[]; gone: string[] }> {
   if (since.os !== 'win32') return { hits: await changedSince($, root, since, 0, ignored), gone: [] }
-  if (rt.dirty.root !== root) return { hits: [], gone: [] }
-  const entries = Object.entries(rt.dirty.files)
-  const gone = entries.filter(([p, c]) => c === 'del' && before[p] !== 'del').map(([p]) => p)
-  const live = entries.filter(([, c]) => c !== 'del').map(([p]) => p)
-  return { hits: await newer($, live.slice(0, 4_000), since.ms), gone }
+  const split = dirtySplit(rt.dirty, root, before)
+  if (!split) return { hits: [], gone: [] }
+  return { hits: await newer($, split.live, since.ms), gone: split.gone }
 }
 
 async function sinceNow($: EngineInterface, writes: boolean): Promise<Since> {
   const ms = await $.clock.now()
   const os = await osName($)
   if (os !== 'darwin' || !writes) return { ms, mark: '', os }
-  const mark = `${((await $.env.get('TMPDIR')) || '/tmp').replace(/\/+$/, '')}/filetree-${await $.session.id()}-${++rt.markId}.mark`
+  const mark = markPath((await $.env.get('TMPDIR')) || '', await $.session.id(), ++rt.markId)
   try {
     await $.process.run(['touch', mark], { timeoutMs: 3_000 })
     return { ms, mark, os }
@@ -360,11 +312,11 @@ async function walkSize($: EngineInterface, dir: string): Promise<number> {
       } catch {
         continue
       }
-      for (const e of entries) {
-        if (++seen > SIZE_WALK_LIMIT) return -1
-        if (e.kind === 'dir' && !e.isLink) next.push(join(d, e.name))
-        else if (e.kind === 'file') total += e.size
-      }
+      const counted = tallyDir(d, entries, seen)
+      if (!counted) return -1
+      seen = counted.seen
+      total += counted.bytes
+      next.push(...counted.dirs)
     }
     level = next
   }
@@ -375,9 +327,7 @@ async function dirSize($: EngineInterface, dir: string): Promise<number> {
   if (rootOfDisk(dir)) return -1
   if ((await osName($)) === 'win32') return walkSize($, dir)
   try {
-    const run = await $.process.run(['du', '-skxH', dir], { timeoutMs: SIZE_TIMEOUT_MS })
-    const kb = Number(run.stdout.trim().split(/\s/)[0] || NaN)
-    return Number.isFinite(kb) ? kb * 1024 : -1
+    return parseDu((await $.process.run(['du', '-skxH', dir], { timeoutMs: SIZE_TIMEOUT_MS })).stdout)
   } catch {
     return -1
   }
@@ -391,9 +341,8 @@ function pumpSizes($: EngineInterface): void {
     rt.sizeActive += 1
     void dirSize($, dir)
       .then(async bytes => {
-        if (epoch === rt.sizeEpoch) return patch($, cur => (inside(cur.root, dir) ? { dirSizes: { ...cur.dirSizes, [dir]: bytes } } : {}))
-        const cur = await get($)
-        if (cur.showSize && inside(cur.root, dir) && !(dir in cur.dirSizes) && !rt.sizeQueue.includes(dir)) rt.sizeQueue.push(dir)
+        if (epoch === rt.sizeEpoch) return patch($, cur => sizePatch(cur, dir, bytes))
+        if (stillWanted(await get($), dir, rt.sizeQueue)) rt.sizeQueue.push(dir)
       })
       .catch(() => undefined)
       .finally(() => {
@@ -405,24 +354,14 @@ function pumpSizes($: EngineInterface): void {
 }
 
 function wantSizes($: EngineInterface, dirs: string[]): void {
-  for (const dir of dirs) if (!rt.sizing.has(dir) && !rt.sizeQueue.includes(dir)) rt.sizeQueue.push(dir)
+  rt.sizeQueue = enqueue(rt.sizeQueue, rt.sizing, dirs)
   pumpSizes($)
 }
 
 async function staleSizes($: EngineInterface, paths?: string[]): Promise<void> {
   rt.sizeEpoch += 1
   rt.sizeQueue = []
-  await patch($, cur => {
-    if (!paths) return { dirSizes: {} }
-    const keep: Record<string, number> = {}
-    for (const [dir, bytes] of Object.entries(cur.dirSizes)) if (!paths.some(p => inside(dir, p))) keep[dir] = bytes
-    return { dirSizes: keep }
-  })
-}
-
-function openDirs(t: FileTree): string[] {
-  const open = new Set(t.expanded)
-  return t.nodes.filter(n => n.kind === 'dir' && n.loaded && open.has(n.id)).map(n => n.id)
+  await patch($, cur => ({ dirSizes: keptSizes(cur.dirSizes, paths) }))
 }
 
 function keepTop(cur: FileTree, expanded: string[]): Partial<FileTree> {
@@ -520,7 +459,7 @@ async function startGit($: EngineInterface, actions: GitAction[]): Promise<numbe
 async function headOf($: EngineInterface, cwd: string): Promise<string> {
   try {
     const run = await git($, cwd, ['rev-parse', 'HEAD'], 5_000)
-    return run.exitCode === 0 ? run.stdout.trim() : ''
+    return parseHead(run.exitCode, run.stdout)
   } catch {
     return ''
   }
@@ -594,21 +533,16 @@ async function settleBackground($: EngineInterface, text: string): Promise<void>
 }
 
 async function gitPaths($: EngineInterface, root: string, prefix: string, committed: boolean): Promise<string[]> {
-  const map = mapper(root, prefix)
   try {
-    const run = committed
-      ? await git($, root, ['diff-tree', '--root', '--no-commit-id', '--name-only', '-r', '-z', 'HEAD', '--', '.'], 5_000)
-      : await git($, root, ['diff', '--cached', '--name-only', '-z', '--', '.'], 5_000)
-    return run.exitCode === 0 ? run.stdout.split('\0').filter(Boolean).flatMap(rel => map(rel) ?? []) : []
+    const run = await git($, root, gitPathsArgs(committed), 5_000)
+    return run.exitCode === 0 ? mapGitPaths(run.stdout, root, prefix) : []
   } catch {
     return []
   }
 }
 
-// Outside a repo the cwd's own .git is watched, so a git init there is seen as it lands.
 async function gitWatch($: EngineInterface, cwd: string): Promise<string[]> {
-  const gd = (await gitDir($, cwd)) || join(cwd, '.git')
-  rt.gitWatched = [join(gd, 'index'), join(gd, 'HEAD')]
+  rt.gitWatched = watchFiles(await gitDir($, cwd), cwd)
   return rt.gitWatched
 }
 
@@ -618,7 +552,7 @@ async function gitDir($: EngineInterface, cwd: string): Promise<string> {
       const dot = join(dir, '.git')
       const st = await $.fs.stat(dot)
       if (st.kind === 'dir') return dot
-      const ref = /^gitdir:\s*(.+)$/m.exec(String(await $.fs.read(dot)))?.[1]?.trim()
+      const ref = gitdirRef(String(await $.fs.read(dot)))
       if (ref) return resolve(dir, ref, rt.home)
     } catch {
       const up = dirname(dir)
@@ -645,7 +579,7 @@ async function sync($: EngineInterface, force = false): Promise<void> {
 
 async function copyPath($: EngineInterface, id: string, absolute: boolean, surface?: string): Promise<void> {
   const t = await get($)
-  const text = !absolute && id !== t.root && inside(t.root, id) ? id.slice(t.root.endsWith('/') ? t.root.length : t.root.length + 1) : id
+  const text = copyText(t.root, id, absolute)
   const done = await $.ui.copy({ text, ...(surface ? { surface: surface as 'terminal' } : {}) })
   $.ui.toast(done.isCopied ? `Copied ${text}` : 'Could not copy the path')
 }
@@ -781,7 +715,7 @@ async function reveal($: EngineInterface, paths: string[]): Promise<void> {
 
 async function walk($: EngineInterface, root: string, depth: number, limit: number): Promise<string[]> {
   const out: string[] = []
-  const skip = broad(root) ? [...PRUNE, ...HOME_PRUNE] : PRUNE
+  const skip = walkSkip(broad(root))
   let level = [root]
   for (let d = 0; d < depth && level.length && out.length < limit; d++) {
     const next: string[] = []
@@ -800,14 +734,12 @@ async function walk($: EngineInterface, root: string, depth: number, limit: numb
 
 async function listAll($: EngineInterface, t: FileTree): Promise<string[] | null> {
   try {
-    if (!t.top && (await osName($)) === 'win32') return await walk($, t.root, rootOfDisk(t.root) ? 3 : 6, 20_000)
+    if (!t.top && (await osName($)) === 'win32') return await walk($, t.root, listDepth(rootOfDisk(t.root)), 20_000)
     const run = t.top
       ? await git($, t.root, ['ls-files', '-co', '--exclude-standard', '-z'], 10_000)
-      : await $.process.run(['find', '-H', t.root, '-xdev', '-maxdepth', rootOfDisk(t.root) ? '3' : '6', ...pruneArgs(t.root), '-type', 'f', '-print0'], { timeoutMs: 10_000 })
+      : await $.process.run(findFilesArgv(t.root, rootOfDisk(t.root), pruneArgs(t.root)), { timeoutMs: 10_000 })
     if (t.top && run.exitCode !== 0) return null
-    const paths = run.stdout.split('\0').filter(Boolean)
-    if (run.isStdoutTruncated) paths.pop()
-    return paths.map(p => (isAbsolute(p) ? p : join(t.root, p)))
+    return indexedPaths(run.stdout, !!run.isStdoutTruncated, t.root)
   } catch {
     return null
   }
@@ -830,15 +762,14 @@ function indexPaths($: EngineInterface, t: FileTree): Promise<string[]> {
 async function search($: EngineInterface, query: string): Promise<string[]> {
   if (!(await get($)).query.trim()) rt.searchIndex = null
   await patch($, () => ({ query }))
-  const q = query.trim().toLowerCase()
+  const q = searchTerm(query)
   if (!q) return []
   const t = await get($)
-  const hits = (await indexPaths($, t)).filter(p => relative(t.root, p).toLowerCase().includes(q)).slice(0, SEARCH_REVEAL_LIMIT)
+  const hits = matches(await indexPaths($, t), t.root, q)
   if ((await get($)).query !== query) return []
   await revealPaths($, hits)
   const shown = await get($)
-  const ids = new Set(shown.nodes.map(n => n.id))
-  const stale = [...new Set(hits.filter(p => !ids.has(p)).map(dirname))].filter(d => inside(shown.root, d))
+  const stale = staleDirs(hits, new Set(shown.nodes.map(n => n.id)), shown.root)
   if (stale.length) await loadDirs($, stale)
   return hits
 }
@@ -948,34 +879,25 @@ function previewLines(text: string, top: number, rows: number, markdown: boolean
 }
 
 async function openFile($: EngineInterface, path: string, external = false): Promise<void> {
-  // The setting always has a value: a blank one falls back to the default, preview.
-  const setting = settings.openWith.trim() || 'preview'
+  const setting = openSetting(settings.openWith)
   if (!external && setting === 'preview') return showPreview($, path)
-  const os = await osName($)
-  const native = (p: string) => (os === 'win32' ? p.replace(/\//g, '\\') : p)
-  const custom = external || setting === 'app' ? null : openWithCommand(setting, native(path), native(dirname(path)))
-  const { argv, init } = custom ? { argv: os === 'linux' ? ['sh', '-c', LINUX_LAUNCH, 'sh', ...custom] : custom, init: { timeoutMs: 10_000 } } : openCommand(os, path)
+  const { argv, init, tool } = openPlan(await osName($), setting, external, path)
   try {
     const run = await $.process.run(argv, init)
-    if (run.exitCode !== 0) $.ui.toast(`could not open ${path} with ${custom?.[0] ?? argv[0]}: ${run.stderr.trim().split('\n')[0] || `exit ${run.exitCode}`}`)
+    if (run.exitCode !== 0) $.ui.toast(openFailed(path, tool, run))
   } catch {
-    $.ui.toast(`could not open ${path} with ${custom?.[0] ?? argv[0]}`)
+    $.ui.toast(openFailed(path, tool))
   }
 }
 
 async function toggle($: EngineInterface, n: FileNode): Promise<void> {
   if (n.kind === 'dir' && !(await get($)).expanded.includes(n.id)) await loadDirs($, [n.id])
-  await patch($, t => {
-    const open = new Set(t.expanded)
-    if (n.kind === 'dir') open.has(n.id) ? open.delete(n.id) : open.add(n.id)
-    return { expanded: [...open], cursor: n.id, selected: n.kind === 'dir' ? t.selected : n.id }
-  })
+  await patch($, t => togglePatch(t, n))
 }
 
 async function press($: EngineInterface, n: FileNode): Promise<void> {
-  const now = await $.clock.now()
-  const isDouble = rt.lastPress.key === n.id && now - rt.lastPress.at < DOUBLE_MS
-  rt.lastPress = { key: isDouble ? '' : n.id, at: now }
+  const { isDouble, last } = pressOf(rt.lastPress, n.id, await $.clock.now())
+  rt.lastPress = last
   if (!isDouble) {
     await toggle($, n)
     return
