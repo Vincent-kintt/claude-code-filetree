@@ -273,6 +273,9 @@ export function relative(root: string, path: string): string {
   return path === root ? '' : path.slice(root.endsWith('/') ? root.length : root.length + 1)
 }
 
+/** A search shows at most this many matches from folders you haven't opened (TRE-04). */
+export const SEARCH_REVEAL_LIMIT = 60
+
 export function visibleRows(t: FileTree): Row[] {
   const kids = new Map<string, FileNode[]>()
   for (const n of t.nodes) {
@@ -281,16 +284,19 @@ export function visibleRows(t: FileTree): Row[] {
     else kids.set(n.parent, [n])
   }
   const q = t.query.trim().toLowerCase()
+  const open = new Set(t.expanded)
   let keep: Set<string> | null = null
   if (q) {
     keep = new Set()
+    let revealed = 0
     for (const n of t.nodes) {
       if (!relative(t.root, n.id).toLowerCase().includes(q)) continue
+      // A match in a folder you opened always shows; one the search had to load counts toward the cap.
+      if (n.parent !== t.root && !open.has(n.parent) && revealed++ >= SEARCH_REVEAL_LIMIT) continue
       keep.add(n.id)
       for (const a of ancestorsOf(n.id, t.root)) keep.add(a)
     }
   }
-  const open = new Set(t.expanded)
   const rows: Row[] = []
   const walk = (dir: string, depth: number) => {
     for (const n of kids.get(dir) ?? []) {

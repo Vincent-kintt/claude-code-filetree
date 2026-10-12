@@ -6,6 +6,7 @@ import { type Card, type DesktopModel, desktopPane, desktopPreview } from './des
 import { BRANCH_ICON, chainOf, type GitAction, gitActions, readOnly, readTargets, resolve, TONES } from './git'
 import type { RowSpec, RowsProps, Seg } from './rows'
 import { CHEVRON_CLOSED, CHEVRON_OPEN, fileIcon, GIT_COLOR } from './icons'
+import { VERSION } from './version'
 import {
   ancestorsOf,
   type Change,
@@ -31,6 +32,7 @@ import {
   toNodes,
   underAny,
   rowsOf,
+  SEARCH_REVEAL_LIMIT,
   visibleRows,
 } from './tree'
 
@@ -57,7 +59,6 @@ const NO_REPO_DEPTH = 4
 const DOUBLE_MS = 450
 const FIND_LIMIT = 200
 const READ_REVEAL_LIMIT = 12
-const SEARCH_REVEAL_LIMIT = 60
 const ACTIVITY_TTL_MS = 45_000
 const ADD_COLOR = '#98c379'
 const DEL_COLOR = '#e06c75'
@@ -1231,7 +1232,7 @@ export const register: Register = (on, options) => {
     noDock = false
     const cwd = await cwdOf($)
     await reset($, cwd, true)
-    return { text: `File tree on ${shortPath(cwd)}.` }
+    return { text: `filetree ${VERSION}: File tree on ${shortPath(cwd)}.` }
   })
 
   on('tool.call', async ($, e, next) => {
@@ -1697,7 +1698,7 @@ export const register: Register = (on, options) => {
         selected: t.selected ? rel(t.selected) : '',
         touched: mine.slice(0, TOUCH_SHOWN).map(x => {
           const d = dirname(x.path)
-          return { path: x.path, name: x.path.split('/').pop() ?? x.path, dir: d === t.root ? '' : rel(d), state: x.state }
+          return { path: x.path, name: x.path.split('/').pop() ?? x.path, dir: d === t.root ? '' : rel(d), state: x.state, folder: t.nodes.some(n => n.id === x.path && n.kind === 'dir') }
         }),
         more: Math.max(0, mine.length - TOUCH_SHOWN),
         project: header,

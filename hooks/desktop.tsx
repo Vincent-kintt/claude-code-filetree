@@ -3,10 +3,11 @@ import type { Elements, RenderChildren } from 'claude-code'
 import type { Touch } from '../types'
 import { TONES } from './git'
 import { GIT_COLOR } from './icons'
+import { VERSION } from './version'
 
 export type Icon = 'eye' | 'pencil' | 'check' | 'git' | 'x' | 'idle'
 export type Card = { tone: string; phase: string; title: string; sub: string; icon: Icon; live: boolean }
-export type TouchRow = { path: string; name: string; dir: string; state: Touch['state'] }
+export type TouchRow = { path: string; name: string; dir: string; state: Touch['state']; folder: boolean }
 export type DesktopModel = {
   card: Card
   branch: { head: string; upstream: string; ahead: number; behind: number } | null
@@ -62,11 +63,12 @@ export function toneColor(tone: string): string {
   return TONES[tone]?.solid ?? IDLE
 }
 
-/** The file's type in at most four letters, as the touched list badges it. */
-export function badgeOf(name: string): { text: string; color: string } {
+/** The file's type in at most four letters, as the touched list badges it. A folder is DIR, a file with no extension FILE. */
+export function badgeOf(name: string, folder = false): { text: string; color: string } {
+  if (folder) return { text: 'DIR', color: IDLE }
   const dot = name.lastIndexOf('.')
   const ext = dot >= 0 ? name.slice(dot + 1).toLowerCase() : ''
-  const text = (ext || name).slice(0, 4).toUpperCase()
+  const text = ext ? ext.slice(0, 4).toUpperCase() : 'FILE'
   return { text, color: BADGE.find(([re]) => re.test(ext))?.[1] ?? IDLE }
 }
 
@@ -92,7 +94,7 @@ export function desktopPane(el: Elements['desktop'], m: DesktopModel, act: Deskt
       <Box key="card" flexDirection="column" borderStyle="round" borderColor={c.live ? color : 'subtle'} paddingX={2} paddingY={1}>
         <Box flexDirection="row" gap={2} alignItems="center">
           <Svg source={iconSvg(c.icon, color)} alt={c.title} width={48} height={48} />
-          <Box flexDirection="column" flexShrink={1}>
+          <Box flexDirection="column" flexShrink={1} minWidth={0}>
             <Text bold color={color}>
               {c.phase}
             </Text>
@@ -106,23 +108,29 @@ export function desktopPane(el: Elements['desktop'], m: DesktopModel, act: Deskt
             ) : null}
           </Box>
         </Box>
-        <Box flexDirection="row" marginTop={1}>
+        <Box flexDirection="row" flexWrap="wrap" columnGap={1} marginTop={1}>
           {m.branch ? (
-            <Box flexDirection="row" flexShrink={0}>
+            // A long branch shrinks: the upstream gives way first, then the branch name ends in an ellipsis.
+            <Box flexDirection="row" flexShrink={1} minWidth={0}>
               <Text color={toneColor('blue')}>⑂ </Text>
-              <Text bold>{m.branch.head}</Text>
+              <Text bold wrap="truncate-end">
+                {m.branch.head}
+              </Text>
               {m.branch.ahead > 0 && <Text color={toneColor('teal')}>{` ↑${m.branch.ahead}`}</Text>}
               {m.branch.behind > 0 && <Text color={toneColor('blue')}>{` ↓${m.branch.behind}`}</Text>}
-              {m.branch.upstream ? <Text color={m.muted}>{` ${m.branch.upstream}`}</Text> : null}
+              {m.branch.upstream ? (
+                <Box flexShrink={100} minWidth={0}>
+                  <Text color={m.muted} wrap="truncate-end">{` ${m.branch.upstream}`}</Text>
+                </Box>
+              ) : null}
             </Box>
           ) : (
             <Text color={m.muted}>{m.noRepo ? 'no git repo' : ''}</Text>
           )}
           <Box flexGrow={1} />
-          <Box flexDirection="row" flexShrink={1}>
-            <Text color={m.muted} wrap="truncate-end">
-              {m.summary.text}
-            </Text>
+          {/* Never shrinks: when the branch line has no room, the summary wraps whole onto the next line. */}
+          <Box flexDirection="row" flexShrink={0}>
+            <Text color={m.muted}>{m.summary.text}</Text>
             {m.summary.add > 0 && <Text color={ADD}>{` +${m.summary.add}`}</Text>}
             {m.summary.del > 0 && <Text color={DEL}>{` -${m.summary.del}`}</Text>}
           </Box>
@@ -140,7 +148,7 @@ export function desktopPane(el: Elements['desktop'], m: DesktopModel, act: Deskt
       <Input key="q" placeholder="Find a file" autoFocus value={m.query} onInput={(v: string) => act.search(v)} onSubmit={(v: string) => act.jump(v)} />
 
       <Box key="touched" flexDirection="column" borderStyle="round" borderColor="subtle" paddingX={2} paddingY={1}>
-        <Box flexDirection="row">
+        <Box flexDirection="row" columnGap={1}>
           <Text bold color={m.muted}>
             CLAUDE TOUCHED
           </Text>
@@ -156,18 +164,23 @@ export function desktopPane(el: Elements['desktop'], m: DesktopModel, act: Deskt
           <Text color={m.muted}>Files Claude reads, edits or commits this session show here</Text>
         ) : (
           m.touched.map(r => {
-            const badge = badgeOf(r.name)
+            const badge = badgeOf(r.name, r.folder)
             const pill = PILL[r.state]
             const pc = toneColor(pill.tone)
             return (
-              <Box flexDirection="row" marginTop={1}>
-                <Box flexDirection="row" flexShrink={1} gap={1} alignItems="center">
+              <Box flexDirection="row" columnGap={1} marginTop={1}>
+                <Box flexDirection="row" flexShrink={1} minWidth={0} gap={1} alignItems="center">
                   <Text bold color={badge.color} backgroundColor={`${badge.color}26`}>{` ${badge.text} `}</Text>
-                  <Button key={`touch:${r.path}`} label={r.name} plain onPress={() => act.openTouch(r.path)} />
+                  {/* Lets the name shrink, so the app cuts it with an ellipsis instead of pushing the pill out. */}
+                  <Box flexShrink={1} minWidth={0} overflow="hidden">
+                    <Button key={`touch:${r.path}`} label={r.name} plain onPress={() => act.openTouch(r.path)} />
+                  </Box>
                   {r.dir ? (
-                    <Text color={m.muted} wrap="truncate-start">
-                      {r.dir}
-                    </Text>
+                    <Box flexShrink={100} minWidth={0}>
+                      <Text color={m.muted} wrap="truncate-start">
+                        {r.dir}
+                      </Text>
+                    </Box>
                   ) : null}
                 </Box>
                 <Box flexGrow={1} />
@@ -180,20 +193,24 @@ export function desktopPane(el: Elements['desktop'], m: DesktopModel, act: Deskt
       </Box>
 
       <Box flexDirection="column">
-        <Box flexDirection="row" marginBottom={1} alignItems="center">
-          <Select
-            key="view"
-            value={m.view}
-            options={[
-              { value: 'all', label: 'ALL FILES' },
-              { value: 'edited', label: `EDITED FILES (${m.edited})` },
-            ]}
-            onSelect={(v: string) => act.setView(v === 'edited' ? 'edited' : 'all')}
-          />
-          <Box flexGrow={1} />
-          <Text bold color={m.muted} wrap="truncate-start">
-            {m.project.toUpperCase()}
-          </Text>
+        <Box flexDirection="row" columnGap={1} marginBottom={1} alignItems="center">
+          {/* Never shrinks: a narrow pane cuts the project name instead of the menu's label. */}
+          <Box flexShrink={0}>
+            <Select
+              key="view"
+              value={m.view}
+              options={[
+                { value: 'all', label: 'ALL FILES' },
+                { value: 'edited', label: `EDITED FILES (${m.edited})` },
+              ]}
+              onSelect={(v: string) => act.setView(v === 'edited' ? 'edited' : 'all')}
+            />
+          </Box>
+          <Box flexGrow={1} flexShrink={1} minWidth={0} justifyContent="flex-end">
+            <Text bold color={m.muted} wrap="truncate-start">
+              {m.project.toUpperCase()}
+            </Text>
+          </Box>
         </Box>
         {m.noRepo ? <Text color={m.muted}>git status starts after git init</Text> : null}
         {m.view === 'edited' && m.edited === 0 ? <Text color={m.muted}>{m.noRepo ? 'Edited files need a git repo' : 'Nothing edited, added or removed since the last commit'}</Text> : null}
@@ -204,6 +221,7 @@ export function desktopPane(el: Elements['desktop'], m: DesktopModel, act: Deskt
           </Text>
         ) : null}
       </Box>
+      <Text dimColor>{`filetree ${VERSION}`}</Text>
     </Box>
   )
 }
@@ -227,7 +245,7 @@ export function desktopPreview(el: Elements['desktop'], m: PreviewModel, act: Pr
     <Box flexDirection="column" paddingX={1} paddingY={1} gap={1}>
       <Box flexDirection="row" alignItems="center" gap={1}>
         <Button key="back" plain label="← Back to files" onPress={act.back} />
-        <Box flexShrink={1} flexGrow={1}>
+        <Box flexShrink={1} flexGrow={1} minWidth={0}>
           <Text bold wrap="truncate-start">
             {m.name}
           </Text>

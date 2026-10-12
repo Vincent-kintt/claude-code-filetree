@@ -6,7 +6,7 @@
 
 <p align="center">
   <img src="https://img.shields.io/badge/Claude_Code-%E2%89%A5_2.1.287-D97757?logo=claude&logoColor=fff" alt="Claude Code 2.1.287 or newer">
-  <img src="https://img.shields.io/badge/version-0.2.24-blue" alt="Version">
+  <img src="https://img.shields.io/badge/version-0.2.28-blue" alt="Version">
   <img src="https://img.shields.io/badge/type-mod-6f42c1" alt="Claude Code mod">
   <img src="https://img.shields.io/badge/license-MIT-green" alt="License">
 </p>
@@ -103,6 +103,20 @@ Turn on the pre-commit hook once per clone; it runs `claude plugin validate` and
 
 ```bash
 git config core.hooksPath .githooks
+```
+
+A session loads a copy of the plugin made at install time, so edits don't show until you reinstall. This bumps the patch version, reinstalls from your checkout and deletes older cached copies; then start a new session and check that `/filetree` replies with the new version:
+
+```bash
+scripts/dev-install.sh
+```
+
+A reinstall resets the plugin's settings; pass yours again with `--config`, for example `scripts/dev-install.sh --config column=size`.
+
+To check the Desktop layout at narrow widths in headless Chrome (screenshots included):
+
+```bash
+node scripts/check-desktop-layout.ts
 ```
 
 ## License

@@ -3,6 +3,9 @@ set -e
 CLAUDE=claude
 [ -x "$HOME/.local/bin/claude" ] && CLAUDE="$HOME/.local/bin/claude"
 git diff --cached --quiet -- hooks tests types .claude-plugin && exit 0
+want=$(sed -n 's/.*"version": *"\([^"]*\)".*/\1/p' .claude-plugin/plugin.json)
+got=$(sed -n "s/^export const VERSION = '\(.*\)'$/\1/p" hooks/version.ts)
+[ "$want" = "$got" ] || { echo "hooks/version.ts says $got but plugin.json says $want"; exit 1; }
 for manifest in .claude-plugin/plugin.json .claude-plugin/marketplace.json; do
   "$CLAUDE" plugin validate "$manifest" >/dev/null || { "$CLAUDE" plugin validate "$manifest"; exit 1; }
 done

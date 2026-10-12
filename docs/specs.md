@@ -22,7 +22,7 @@ to them. To install and use the plugin, see the [main README](../README.md).
 |---|---|
 | TRE-01 | The root is always the cwd. It follows the cwd when it changes, including after `cd`, `pushd` and `popd` in Bash, and after `/clear`, resume or fork. A double-click or Ctrl/Shift-click on a folder only toggles it. |
 | TRE-03 | Lists directories first, then files, in numeric-aware, case-insensitive name order. |
-| TRE-04 | Search matches relative paths as a case-insensitive substring, including in folders that haven't been opened yet. It reveals at most 60 matches from unopened folders. |
+| TRE-04 | Search matches relative paths as a case-insensitive substring, including in folders that haven't been opened yet. It reveals at most 60 matches from folders you haven't opened, even when they're all in one folder; a folder you opened shows all its matches. |
 | TRE-05 | Inside a git repo, the search index is the tracked and untracked files under the cwd, minus git's standard excludes (`.gitignore`, `.git/info/exclude`, the global excludes file), at any depth. |
 | TRE-06 | Outside a git repo, the search index skips `.git`, `node_modules`, `target`, `.venv`, `__pycache__`, `dist` and `.next`, and goes 6 levels deep (3 at a disk root). At the home folder or a disk root it also skips `Library`, `AppData` and `.Trash`. `find` stays on one filesystem; on Windows a listing walk follows linked folders and stops after the folder that reaches 20,000 files. |
 | TRE-07 | Hidden files are always shown, in the muted colour unless a git status colours them. |
@@ -86,12 +86,13 @@ to them. To install and use the plugin, see the [main README](../README.md).
 |---|---|
 | DSK-01 | Shows a card with Claude's current action, or its last one when nothing is running, marked RIGHT NOW, DONE, FAILED or IDLE. Below it: the branch with ahead/behind, and a change summary. |
 | DSK-02 | Shows "Find a file" search. |
-| DSK-03 | Shows a "Claude touched" list. It keeps 40 files and shows the first 8 inside the root, with a "+N more" line. |
+| DSK-03 | Shows a "Claude touched" list. It keeps 40 files and shows the first 8 inside the root, with a "+N more" line. A folder is badged `DIR`. |
 | DSK-04 | Offers an All files / Edited files view menu. |
 | DSK-05 | The in-pane file view has "← Back to files" and "Open in app ↗". |
 | DSK-06 | The body scrolls natively, and every row is drawn, up to the cap in DSK-07. |
 | DSK-07 | The file view and the tree each stay within 60,000 serialized characters. A long file is cut at a line break, and a big tree keeps the rows centred on the cursor (or the top rows, when the cursor isn't among them) and says how many it left out above and below. |
 | DSK-08 | With `glyphs: auto`, the Desktop app uses plain Unicode glyphs. |
+| DSK-09 | From 280 px wide, nothing spills out of its box: long text ends in an ellipsis, the change summary wraps under the branch, and no two texts in a row run together. A touched file name too long for its row ends in an ellipsis too. |
 
 ## Input
 
@@ -113,6 +114,12 @@ to them. To install and use the plugin, see the [main README](../README.md).
 | APP-02 | `icons.ts` maps 28 exact filenames and 64 extensions to icons. |
 | APP-03 | With an Omarchy theme present, the pane takes its colours and background and follows a theme switch within 2 s. A theme installed mid-session is picked up on the next resync. With no theme, nothing is polled. |
 
+## Version
+
+| ID | Spec |
+|---|---|
+| VER-01 | `/filetree` replies with the loaded version (`filetree <version>: File tree on …`), and the Desktop pane ends with it in a dim line. `hooks/version.ts` matches `plugin.json`, which the pre-commit hook checks. |
+
 ## Settings
 
 | ID | Setting | Values (default first) |
@@ -130,3 +137,4 @@ to them. To install and use the plugin, see the [main README](../README.md).
 | QA-01 | `claude plugin test .` passes, with no model and no API key. |
 | QA-02 | `claude plugin validate` passes for `plugin.json` and for `marketplace.json`. |
 | QA-03 | QA-01 and QA-02 run locally on macOS, through the pre-commit hook, before each commit that touches the plugin. There is no CI. |
+| QA-04 | `node scripts/check-desktop-layout.ts` renders the Desktop scenes in headless Chrome at 280, 360 and 480 px, fails on DSK-09, and saves screenshots. It mirrors the app's layout; it is not the app's renderer. |
