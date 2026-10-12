@@ -1,9 +1,9 @@
-import { type BuiltinToolResults, type EngineInterface, type Register, type ResultOf, update } from 'claude-code'
+import { type EngineInterface, type Register, type ResultOf, update } from 'claude-code'
 import { LINUX_LAUNCH, openCommand, openWithCommand } from './open'
 
 import type { Activity, ClaudeLog, FileNode, FileTree, Now, Theme, Touch } from '../types'
 import { type Card, type DesktopModel, desktopPane, desktopPreview } from './desktop'
-import { BRANCH_ICON, chainOf, type GitAction, gitActions, readOnly, readTargets, resolve, TONES } from './git'
+import { BRANCH_ICON, type GitAction, gitActions, readOnly, readTargets, resolve, TONES } from './git'
 import type { RowSpec, RowsProps, Seg } from './rows'
 import { CHEVRON_CLOSED, CHEVRON_OPEN, fileIcon, GIT_COLOR } from './icons'
 import { VERSION } from './version'
@@ -42,7 +42,6 @@ import {
   DATE_MIN_COLUMNS,
   DEL_COLOR,
   DOUBLE_MS,
-  FIND_LIMIT,
   FLASH_MS,
   FONT_SCRIPT,
   HOME_PRUNE,
@@ -66,6 +65,37 @@ import {
 import { broad, pruneArgs, rootOfDisk, shortPath } from './core/platform'
 import { rt, settings } from './core/runtime'
 import type { GitOperation, Job, OS, Outcome, Pending, Since } from './core/types'
+import {
+  bashOutput,
+  branchTone,
+  changesDir,
+  done,
+  editing,
+  editTarget,
+  expired,
+  failAll,
+  jobOf,
+  lastCommitSha,
+  namedPaths,
+  needsHead,
+  newerListed,
+  outcomesOf,
+  paint,
+  proven,
+  readCandidate,
+  scanDirs,
+  scanHits,
+  settled,
+  sinceOf,
+  stagedShown,
+  started,
+  stdoutOf,
+  taskEnds,
+  touchTone,
+  withoutIds,
+  writes,
+} from './features/git-jobs/model'
+import { reading, searchNames, searchReads } from './features/reads/model'
 
 // The host lists what a module reads and writes from these literals, so they stay in this file.
 const TREE = { plugin: 'filetree', key: 'tree' } as const
@@ -488,32 +518,10 @@ async function followCwd($: EngineInterface): Promise<boolean> {
   return true
 }
 
-const PROOF: Record<string, (op: GitOperation) => boolean> = {
-  push: op => Boolean(op.push),
-  merge: op => op.branch?.action === 'merged',
-  rebase: op => op.branch?.action === 'rebased',
-  'pr create': op => op.pr?.action === 'created',
-  'pr merge': op => op.pr?.action === 'merged',
-  'pr comment': op => op.pr?.action === 'commented',
-}
-
 async function startGit($: EngineInterface, actions: GitAction[]): Promise<number[]> {
   const now = await $.clock.now()
   const ids = actions.map(() => ++rt.activityId)
-  await setActivities($, cur => [
-    ...cur.filter(a => a.state === 'running' || now - a.at < ACTIVITY_TTL_MS),
-    ...actions.map((a, i) => ({
-      id: ids[i] ?? 0,
-      kind: a.kind,
-      label: a.running,
-      state: 'running' as const,
-      detail: '',
-      at: now,
-      tone: a.tone,
-      nerd: a.icon.nerd,
-      plain: a.icon.plain,
-    })),
-  ])
+  await setActivities($, cur => started(cur, actions, ids, now))
   return ids
 }
 
@@ -527,56 +535,22 @@ async function headOf($: EngineInterface, cwd: string): Promise<string> {
 }
 
 async function outcomes($: EngineInterface, p: Pending, ok: boolean, op: GitOperation | undefined): Promise<Outcome[]> {
-  const chain = chainOf(p.command)
-  const after = p.actions.some(a => a.verb === 'commit') && !op?.commit ? await headOf($, (await get($)).root || (await cwdOf($))) : ''
-  return p.actions.map(a => {
-    if (a.verb === 'commit') {
-      const sha = op?.commit?.sha || (after && after !== p.head ? after : '')
-      return sha ? { state: 'done', label: a.done, detail: sha.slice(0, 7) } : { state: 'failed', label: `${a.verb} failed`, detail: '' }
-    }
-    if ((op && PROOF[a.verb]?.(op)) || (ok && chain.and)) return { state: 'done', label: a.done, detail: '' }
-    if (!ok && chain.and && chain.size === 1) return { state: 'failed', label: `${a.verb} failed`, detail: '' }
-    return { state: 'unknown', label: '', detail: '' }
-  })
+  const after = needsHead(p, op) ? await headOf($, (await get($)).root || (await cwdOf($))) : ''
+  return outcomesOf(p, ok, op, after)
 }
 
 async function finishGit($: EngineInterface, p: Pending, results: Outcome[]): Promise<void> {
   const now = await $.clock.now()
   let last: Activity | undefined
-  await setActivities($, cur =>
-    cur.flatMap(a => {
-      const i = p.ids.indexOf(a.id)
-      const result = i < 0 ? undefined : results[i]
-      if (result?.state === 'unknown') return []
-      if (!result) return [a]
-      last = { ...a, ...result, at: now }
-      return [last]
-    }),
-  )
-  // The desktop card shows the last git action after its footer chip expires.
-  const settled = last
-  if (settled) await update($, CLAUDE, cur => ({ ...(cur ?? { now: null, touched: [] }), git: settled }))
-  $.clock.after(ACTIVITY_TTL_MS + 500, () => void setActivities($, cur => cur.filter(a => a.state === 'running' || a.at > now)))
-}
-
-function failAll(p: Pending): Outcome[] {
-  return p.actions.map(a => ({ state: 'failed', label: `${a.verb} failed`, detail: '' }))
-}
-
-// Only actions with evidence they succeeded.
-function proven(p: Pending | null, results: Outcome[], cwd: string): GitAction[] {
-  if (!p) return []
-  return p.actions
-    .filter((a, i) => results[i]?.state === 'done' && results[i]?.label === a.done)
-    .map(a => (a.paths ? { ...a, paths: a.paths.map(x => resolve(cwd, x, rt.home)) } : a))
-}
-
-function taskEnds(text: string): [string, string][] {
-  return [...text.matchAll(/<task-notification>([\s\S]*?)<\/task-notification>/g)].flatMap(m => {
-    const id = /<task-id>([^<]*)<\/task-id>/.exec(m[1] ?? '')?.[1]?.trim()
-    const status = /<status>([^<]*)<\/status>/.exec(m[1] ?? '')?.[1]?.trim()
-    return id && status ? [[id, status] as [string, string]] : []
+  await setActivities($, cur => {
+    const next = settled(cur, p.ids, results, now)
+    last = next.last
+    return next.list
   })
+  // The desktop card shows the last git action after its footer chip expires.
+  const latest = last
+  if (latest) await update($, CLAUDE, cur => ({ ...(cur ?? { now: null, touched: [] }), git: latest }))
+  $.clock.after(ACTIVITY_TTL_MS + 500, () => void setActivities($, cur => expired(cur, now)))
 }
 
 async function settleBackground($: EngineInterface, text: string): Promise<void> {
@@ -589,7 +563,7 @@ async function settleBackground($: EngineInterface, text: string): Promise<void>
     const results = task.p ? await outcomes($, task.p, ok, undefined) : []
     if (task.p) await finishGit($, task.p, results)
     if (settings.showReads) rt.queuedReads.push(...task.reads)
-    scheduleScan($, { ...task.job, actions: proven(task.p, results, task.cwd) })
+    scheduleScan($, { ...task.job, actions: proven(task.p, results, task.cwd, rt.home) })
   }
 }
 
@@ -657,75 +631,63 @@ async function afterBash($: EngineInterface, jobs: Job[]): Promise<void> {
   const t = await get($)
   if (!t.root) return
   const actions = jobs.flatMap(j => j.actions)
-  const writers = jobs.filter(j => !j.readOnly)
-  const since = (writers.length ? writers : jobs).reduce((a, j) => (j.since.ms < a.ms ? j.since : a), (writers[0] ?? jobs[0])?.since ?? { ms: 0, mark: '', os: 'linux' as const })
-  const writes = !jobs.every(j => j.readOnly)
+  const since = sinceOf(jobs)
+  const wrote = writes(jobs)
   const before = rt.dirty.root === t.root ? rt.dirty.files : {}
   if (jobs.some(j => j.initRepo)) await detectRepo($)
   else if (!t.top && (await exists($, join(t.root, '.git')))) await detectRepo($)
   const probed = await get($)
-  if (probed.top && (writes || probed.top !== t.top)) await refreshGit($)
-  if (writes) {
+  if (probed.top && (wrote || probed.top !== t.top)) await refreshGit($)
+  if (wrote) {
     rt.searchIndex = null
     await staleSizes($)
   }
   const fresh = await get($)
   const ignored = new Set(fresh.ignored)
-  const tones: Record<string, string> = {}
-  if (writes) {
+  let tones: Record<string, string> = {}
+  if (wrote) {
     const found = fresh.top
       ? await changedInRepo($, t.root, since, before, fresh.ignored)
       : { hits: since.os === 'win32' ? [] : await changedSince($, t.root, since, NO_REPO_DEPTH), gone: [] }
-    const hits = found.hits.filter(x => inside(t.root, x) && !underAny(x, ignored, t.root)).slice(0, FIND_LIMIT)
+    let hits = scanHits(found.hits, t.root, ignored)
     await revealPaths($, hits)
     const loaded = await get($)
-    const dirs = [...new Set([loaded.root, ...openDirs(loaded), ...hits.map(dirname), ...found.gone.map(dirname)])].filter(d => inside(loaded.root, d))
-    const listed = await loadDirs($, dirs)
-    if (!fresh.top && since.os === 'win32')
-      for (const kids of listed.values()) for (const n of kids) if (n.mtime > since.ms && hits.length < FIND_LIMIT) hits.push(n.id)
+    const listed = await loadDirs($, scanDirs(loaded.root, openDirs(loaded), hits, found.gone))
+    if (!fresh.top && since.os === 'win32') hits = newerListed(hits, listed, since.ms)
     await patch($, cur => {
       const ids = new Set(cur.nodes.map(n => n.id))
       return { expanded: cur.expanded.filter(id => ids.has(id)) }
     })
     const present = new Set((await get($)).nodes.map(n => n.id))
-    const touchTone = actions.find(a => !['commit', 'push', 'add'].includes(a.verb))?.tone ?? 'orange'
-    if (settings.showWrites) for (const id of hits) if (present.has(id)) tones[id] = touchTone
+    if (settings.showWrites) tones = paint(tones, hits, present, touchTone(actions))
     const edited = hits.filter(id => present.has(id))
-    if (settings.showWrites && edited.length) await record($, edited, 'edited', { verb: 'edit', state: 'done', path: edited[0] ?? '', count: edited.length, detail: '' })
+    if (settings.showWrites && edited.length) await record($, edited, 'edited', done('edit', edited))
   }
   if (settings.showReads) {
     const found: string[] = []
     for (const r of reads) {
       if (found.length >= READ_REVEAL_LIMIT) break
-      if (r !== t.root && inside(t.root, r) && !underAny(r, ignored, t.root) && (await exists($, r))) found.push(r)
+      if (readCandidate(r, t.root, ignored) && (await exists($, r))) found.push(r)
     }
     if (found.length) {
       await revealPaths($, found)
       const shown = new Set((await get($)).nodes.map(n => n.id))
-      for (const r of found) if (shown.has(r) && !tones[r]) tones[r] = 'purple'
-      await record($, found, 'read', { verb: 'read', state: 'done', path: found[0] ?? '', count: found.length, detail: '' })
+      tones = paint(tones, found, shown, 'purple', false)
+      await record($, found, 'read', done('read', found))
     }
   }
   if (settings.showWrites && actions.length) {
     const final = await get($)
     const committed = actions.some(a => a.verb === 'commit')
     if ((committed || actions.some(a => a.verb === 'add')) && final.top) {
-      // A commit shows what it committed; an add shows what it named, or all that is staged.
-      const named = committed ? null : actions.filter(a => a.verb === 'add').some(a => !a.paths) ? null : actions.flatMap(a => a.paths ?? [])
-      const paths = (await gitPaths($, final.root, final.prefix, committed))
-        .filter(x => !underAny(x, ignored, final.root) && (!named || named.some(n => x === n || inside(n, x))))
-        .slice(0, READ_REVEAL_LIMIT)
+      const paths = stagedShown(await gitPaths($, final.root, final.prefix, committed), namedPaths(actions, committed), ignored, final.root)
       await revealPaths($, paths)
       const shown = new Set((await get($)).nodes.map(n => n.id))
-      for (const x of paths) if (shown.has(x)) tones[x] = 'green'
-      if (committed && paths.length) {
-        const sha = [...(await activities($))].reverse().find(a => a.kind === 'git commit' && a.state === 'done')?.detail ?? ''
-        await record($, paths, 'committed', { verb: 'commit', state: 'done', path: paths[0] ?? '', count: paths.length, detail: sha })
-      }
+      tones = paint(tones, paths, shown, 'green')
+      if (committed && paths.length) await record($, paths, 'committed', done('commit', paths, lastCommitSha(await activities($))))
     }
-    const pushLike = actions.find(a => ['push', 'pull', 'fetch', 'checkout', 'switch', 'branch', 'merge', 'rebase', 'tag'].includes(a.verb) || a.kind.startsWith('gh '))
-    if (pushLike) tones[BRANCH_ROW] = pushLike.tone
-    else if (committed) tones[BRANCH_ROW] = 'green'
+    const branch = branchTone(actions, committed)
+    if (branch) tones[BRANCH_ROW] = branch
   }
   await flash($, tones)
 }
@@ -994,16 +956,10 @@ async function searched($: EngineInterface, e: { tool: string }, next: (e: { too
   if ((e.tool !== 'Grep' && e.tool !== 'Glob') || !settings.showReads) return next(e)
   const result = await next(e)
   if (result.deny || result.isError || !result.result || typeof result.result !== 'object') return result
-  const out = result.result as { filenames?: unknown; content?: unknown }
-  const names = Array.isArray(out.filenames) ? out.filenames.filter((x): x is string => typeof x === 'string') : []
-  if (!names.length && typeof out.content === 'string')
-    for (const line of out.content.split('\n').slice(0, 400)) {
-      const path = posix(line).match(drivesOn() ? /^((?:[A-Za-z]:)?[^:\0]+?):\d+[:-]/ : /^([^:\0]+?):\d+[:-]/)?.[1]
-      if (path) names.push(path)
-    }
+  const names = searchNames(result.result, drivesOn())
   if (!names.length) return result
   const cwd = await cwdOf($)
-  rt.queuedReads.push(...[...new Set(names.map(n => resolve(cwd, n, rt.home)))].slice(0, 60))
+  rt.queuedReads.push(...searchReads(names, cwd, rt.home))
   scheduleScan($, { actions: [], since: await sinceNow($, false), initRepo: false, readOnly: true })
   return result
 }
@@ -1165,15 +1121,9 @@ export const register: Register = (on, options) => {
     if (e.tool !== 'Edit' && e.tool !== 'Write' && e.tool !== 'NotebookEdit' && e.tool !== 'Bash') return next(e)
     const command = e.tool === 'Bash' ? e.command : ''
     const cwd = e.tool === 'Bash' ? await cwdOf($) : ''
-    const file =
-      'file_path' in e && typeof e.file_path === 'string'
-        ? posix(e.file_path)
-        : 'notebook_path' in e && typeof e.notebook_path === 'string'
-          ? posix(e.notebook_path)
-          : ''
+    const file = posix(editTarget(e))
     const was = file && settings.showWrites ? (await claudeLog($)).touched.find(x => x.path === file) : undefined
-    const editing = (state: Now['state']) => ({ verb: 'edit' as const, state, path: file, count: 1, detail: '' })
-    if (file && settings.showWrites) await record($, [file], 'editing', editing('running'))
+    if (file && settings.showWrites) await record($, [file], 'editing', editing(file, 'running'))
     const actions = gitActions(command)
     const quiet = !actions.length && readOnly(command)
     const since = await sinceNow($, e.tool === 'Bash' && !quiet)
@@ -1184,35 +1134,35 @@ export const register: Register = (on, options) => {
     try {
       result = await next(e)
     } catch (err) {
-      if (file && settings.showWrites) await record($, [file], was?.state ?? null, editing('failed'))
+      if (file && settings.showWrites) await record($, [file], was?.state ?? null, editing(file, 'failed'))
       if (pending) await finishGit($, pending, failAll(pending))
       if (since.mark) void $.process.run(['rm', '-f', since.mark], { timeoutMs: 3_000 }).catch(() => undefined)
       throw err
     }
     if (pending && result.deny) {
       const ids = pending.ids
-      void setActivities($, cur => cur.filter(a => !ids.includes(a.id)))
+      void setActivities($, cur => withoutIds(cur, ids))
     }
     if (file && settings.showWrites) {
       const ok = !result.deny && !result.isError
-      await record($, [file], ok ? 'edited' : (was?.state ?? null), editing(ok ? 'done' : 'failed'))
+      await record($, [file], ok ? 'edited' : (was?.state ?? null), editing(file, ok ? 'done' : 'failed'))
     }
     if (result.deny || (result.isError && e.tool !== 'Bash')) {
       if (since.mark) void $.process.run(['rm', '-f', since.mark], { timeoutMs: 3_000 }).catch(() => undefined)
       return result
     }
     if (e.tool === 'Bash') {
-      const out: Partial<BuiltinToolResults['Bash']> = !result.isError && result.result && typeof result.result === 'object' ? result.result : {}
-      const reads = settings.showReads ? readTargets(command, cwd, typeof out.stdout === 'string' ? out.stdout : '', rt.home) : []
-      const job: Job = { actions: [], since, initRepo: actions.some(a => a.init), readOnly: quiet || result.isReadOnly === true }
+      const out = bashOutput(result)
+      const reads = settings.showReads ? readTargets(command, cwd, stdoutOf(out), rt.home) : []
+      const job = jobOf(since, actions, quiet, result.isReadOnly)
       if (out.backgroundTaskId) rt.background.set(out.backgroundTaskId, { p: pending, job, reads, cwd })
       else void (async () => {
         const results = pending ? await outcomes($, pending, !result.isError, out.gitOperation) : []
         if (pending) await finishGit($, pending, results)
         rt.queuedReads.push(...reads)
-        scheduleScan($, { ...job, actions: proven(pending, results, cwd) })
+        scheduleScan($, { ...job, actions: proven(pending, results, cwd, rt.home) })
       })()
-      if (/(^|[;&|\s])(cd|pushd|popd)(\s|$)/.test(command)) $.clock.after(400, () => void followCwd($))
+      if (changesDir(command)) $.clock.after(400, () => void followCwd($))
     } else if (file) void touched($, [file], 'orange', settings.showWrites)
     return result
   })
@@ -1221,16 +1171,16 @@ export const register: Register = (on, options) => {
     if (e.tool !== 'Read' || !settings.showReads) return next(e)
     const file = posix(e.file_path)
     const was = (await claudeLog($)).touched.find(x => x.path === file)
-    await record($, [file], 'reading', { verb: 'read', state: 'running', path: file, count: 1, detail: '' })
+    await record($, [file], 'reading', reading(file, 'running'))
     let result: Awaited<ReturnType<typeof next>>
     try {
       result = await next(e)
     } catch (err) {
-      await record($, [file], was?.state ?? null, { verb: 'read', state: 'failed', path: file, count: 1, detail: '' })
+      await record($, [file], was?.state ?? null, reading(file, 'failed'))
       throw err
     }
     const ok = !result.deny && !result.isError
-    await record($, [file], ok ? 'read' : (was?.state ?? null), { verb: 'read', state: ok ? 'done' : 'failed', path: file, count: 1, detail: '' })
+    await record($, [file], ok ? 'read' : (was?.state ?? null), reading(file, ok ? 'done' : 'failed'))
     if (ok) void touched($, [file], 'purple', true)
     return result
   })
