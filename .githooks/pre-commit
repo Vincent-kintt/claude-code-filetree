@@ -3,6 +3,17 @@ set -e
 CLAUDE=claude
 [ -x "$HOME/.local/bin/claude" ] && CLAUDE="$HOME/.local/bin/claude"
 git diff --cached --quiet -- hooks tests types .claude-plugin && exit 0
+# The host follows $ only into functions declared in hooks/register.tsx, so every host call
+# lives there and the rest of hooks/ stays pure. A broken rule here fails as "hooks module did not load".
+layer() { [ -z "$2" ] || { echo "layering: $1"; printf '%s\n' "$2"; exit 1; }; }
+command -v rg >/dev/null || { echo "pre-commit needs rg (ripgrep) for its layering checks"; exit 1; }
+pure() { rg -n "$@" hooks/features hooks/core hooks/ui -g '!*.tsx' -g '!hooks/core/runtime.ts' -g '!hooks/core/platform.ts'; }
+layer '$ is only used in hooks/register.tsx' "$(rg -n '\$\.(fs|process|env|clock|session|ui|state|command|store|tool|agent|model)\b|[(,]\s*\$\s*[:,)]' hooks -g '!hooks/register.tsx')"
+imported=$(rg -U -o "import (type )?\{[^}]*\} from '\.[^']*'" hooks/register.tsx | sed "s/} from .*//; s/^import //; s/type //g" | rg -o '\b[A-Za-z_]\w*\b' | sort -u | paste -sd '|' -)
+layer '$ is never passed to an imported function' "$(rg -n "\b($imported)\(\\\$[,)]" hooks/register.tsx)"
+layer 'models and core read no rt. or settings. (only core/runtime.ts and core/platform.ts do)' "$(pure '\b(rt|settings)\.')"
+layer "models and core import only types from 'claude-code'" "$(pure --pcre2 "^import (?!type )[^'\n]*from 'claude-code'")"
+layer 'views neither await nor read rt. or settings.' "$(rg -n '\bawait\b|\b(rt|settings)\.' hooks -g 'view.tsx')"
 want=$(sed -n 's/.*"version": *"\([^"]*\)".*/\1/p' .claude-plugin/plugin.json)
 got=$(sed -n "s/^export const VERSION = '\(.*\)'$/\1/p" hooks/version.ts)
 [ "$want" = "$got" ] || { echo "hooks/version.ts says $got but plugin.json says $want"; exit 1; }

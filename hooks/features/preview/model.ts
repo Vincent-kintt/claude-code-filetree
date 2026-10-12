@@ -53,7 +53,7 @@ export function previewLines(text: string, top: number, rows: number, markdown: 
   return { text: shown.join('\n'), top: from }
 }
 
-// The longest run of whole lines whose JSON form, with the rt.view's buttons, name, note and
+// The longest run of whole lines whose JSON form, with the view's buttons, name, note and
 // path around it, stays within RENDER_CHARS. loadPreview already cuts each line to 2,000
 // characters, so the first line always fits.
 export function cutLines(text: string, chrome: number): string {
