@@ -398,6 +398,33 @@ test('TRE-08: with column size the right column shows sizes, for files and folde
   await ui.unmount()
 })
 
+test('TRE-08: below 40 columns the date column is hidden, so names get the room; +N -N still shows', { timeoutMs: 20_000 }, async ($, on) => {
+  const root = '/home/k/proj'
+  const clock = world(on, { os: 'linux', env: { HOME: '/home/k' }, cwd: root, top: root, dirs: { [root]: [['marketplace-manifest.json', 'file'], ['changed.ts', 'file']] }, status: '## main\0 M changed.ts\0', numstat: '3\t1\tchanged.ts\0' }, [])
+  await $.session.start({ cwd: root, surface: 'desktop', isInteractive: true })
+  await clock.settle()
+  for (const [columns, dated] of [[39, false], [40, true]] as const) {
+    const ui = await $.ui.mount({ plugin: 'filetree', surface: 'desktop', component: 'Pane', requestId: 'filetree', props: paneProps(columns) })
+    await clock.settle()
+    const plain = await rowOf(ui, `${root}/marketplace-manifest.json`)
+    expect(STAMP.test(rightText(plain))).toBe(dated)
+    if (!dated) expect(nameSeg(plain, 'marketplace-manifest.json')).toBeDefined()
+    expect(rightText(await rowOf(ui, `${root}/changed.ts`))).toContain('+3 -1')
+    await ui.unmount()
+  }
+})
+
+test('TRE-08: a narrow pane keeps the size column', { timeoutMs: 20_000, options: { column: 'size' } }, async ($, on) => {
+  const root = '/home/k/proj'
+  const clock = world(on, { os: 'linux', env: { HOME: '/home/k' }, cwd: root, top: '', dirs: { [root]: [['a.txt', 'file']] }, status: '', numstat: '' }, [])
+  const ui = await start($, clock, root)
+  await ui.unmount()
+  const narrow = await $.ui.mount({ plugin: 'filetree', surface: 'terminal', component: 'Pane', requestId: 'filetree', props: paneProps(30) })
+  await clock.settle()
+  expect(rightText(await rowOf(narrow, `${root}/a.txt`))).toContain('1 B')
+  await narrow.unmount()
+})
+
 test('TRE-09: folder sizes come from du with a 15 s timeout, 2 jobs at a time', { timeoutMs: 20_000, options: { column: 'size' } }, async ($, on) => {
   const ran: Ran = []
   const root = '/home/k/proj'

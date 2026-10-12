@@ -26,7 +26,7 @@ to them. To install and use the plugin, see the [main README](../README.md).
 | TRE-05 | Inside a git repo, the search index is the tracked and untracked files under the cwd, minus git's standard excludes (`.gitignore`, `.git/info/exclude`, the global excludes file), at any depth. |
 | TRE-06 | Outside a git repo, the search index skips `.git`, `node_modules`, `target`, `.venv`, `__pycache__`, `dist` and `.next`, and goes 6 levels deep (3 at a disk root). At the home folder or a disk root it also skips `Library`, `AppData` and `.Trash`. `find` stays on one filesystem; on Windows a listing walk follows linked folders and stops after the folder that reaches 20,000 files. |
 | TRE-07 | Hidden files are always shown, in the muted colour unless a git status colours them. |
-| TRE-08 | The right column shows file dates, or sizes when the `column` setting is `size`. Folders show no date, and a changed file shows its `+N -N` instead of its date. |
+| TRE-08 | The right column shows file dates, or sizes when the `column` setting is `size`. Folders show no date, and a changed file shows its `+N -N` instead of its date. A pane narrower than 40 columns hides the dates, so the names get the room; sizes and `+N -N` still show. |
 | TRE-09 | Folder sizes come from `du`, or from a summed listing on Windows. They are computed in the background for visible rows, 2 jobs at a time. `du` has a 15 s timeout; the Windows listing gives up after 50,000 entries. |
 | TRE-10 | Folder sizes are recomputed after a write. |
 | TRE-11 | A newer directory listing is never overwritten by an older one. A failed listing keeps the cached rows. |

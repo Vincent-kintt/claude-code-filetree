@@ -47,6 +47,8 @@ const TOUCH_KEEP = 40
 const TOUCH_SHOWN = 8
 const PANE = 'filetree'
 const MIN_COLUMNS = 110
+// Below this many columns the date column is hidden, so the names get the room (TRE-08).
+const DATE_MIN_COLUMNS = 40
 const SHIMMER = Object.fromEntries(Object.entries(TONES).map(([k, v]) => [k, { bright: v.bright, dim: v.dim }]))
 // The desktop app may be light or dark and says neither, so its shimmer peaks on a deep
 // shade rather than the near-white the terminal's dark background takes.
@@ -1583,7 +1585,7 @@ export const register: Register = (on, options) => {
           : n.kind === 'file' || (n.kind === 'link' && n.size > 0)
             ? formatSize(n.size)
             : ''
-        : loc
+        : loc || width < DATE_MIN_COLUMNS
           ? ''
           : (n.kind === 'file' || (n.kind === 'link' && n.size > 0)) && n.mtime > 0
             ? stamp(n.mtime)
