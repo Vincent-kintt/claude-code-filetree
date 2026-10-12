@@ -1,4 +1,4 @@
-import { type BuiltinToolResults, type EngineInterface, type Register, type ResultOf, type Timer, update } from 'claude-code'
+import { type BuiltinToolResults, type EngineInterface, type Register, type ResultOf, update } from 'claude-code'
 import { LINUX_LAUNCH, openCommand, openWithCommand } from './open'
 
 import type { Activity, ClaudeLog, FileNode, FileTree, Now, Theme, Touch } from '../types'
@@ -35,99 +35,49 @@ import {
   SEARCH_REVEAL_LIMIT,
   visibleRows,
 } from './tree'
+import {
+  ACTIVITY_TTL_MS,
+  ADD_COLOR,
+  BRANCH_ROW,
+  DATE_MIN_COLUMNS,
+  DEL_COLOR,
+  DOUBLE_MS,
+  FIND_LIMIT,
+  FLASH_MS,
+  FONT_SCRIPT,
+  HOME_PRUNE,
+  MIN_COLUMNS,
+  NO_REPO_DEPTH,
+  PANE,
+  PRUNE,
+  READ_REVEAL_LIMIT,
+  RENDER_CHARS,
+  RUNNING_MAX_MS,
+  SHIMMER,
+  SHIMMER_DESKTOP,
+  SIZE_JOBS,
+  SIZE_TIMEOUT_MS,
+  SIZE_WALK_LIMIT,
+  THEME_FILE,
+  THEME_POLL_MS,
+  TOUCH_KEEP,
+  TOUCH_SHOWN,
+} from './core/constants'
+import { broad, pruneArgs, rootOfDisk, shortPath } from './core/platform'
+import { rt, settings } from './core/runtime'
+import type { GitOperation, Job, OS, Outcome, Pending, Since } from './core/types'
 
+// The host lists what a module reads and writes from these literals, so they stay in this file.
 const TREE = { plugin: 'filetree', key: 'tree' } as const
 const THEME = { plugin: 'filetree', key: 'theme' } as const
 const ACTIVITY = { plugin: 'filetree', key: 'activity' } as const
 const CLAUDE = { plugin: 'filetree', key: 'claude' } as const
-// The desktop page refuses a drawing past about 100,000 characters serialized, so the
-// highlighted file stays well under it.
-const RENDER_CHARS = 60_000
-const TOUCH_KEEP = 40
-const TOUCH_SHOWN = 8
-const PANE = 'filetree'
-const MIN_COLUMNS = 110
-// Below this many columns the date column is hidden, so the names get the room (TRE-08).
-const DATE_MIN_COLUMNS = 40
-const SHIMMER = Object.fromEntries(Object.entries(TONES).map(([k, v]) => [k, { bright: v.bright, dim: v.dim }]))
-// The desktop app may be light or dark and says neither, so its shimmer peaks on a deep
-// shade rather than the near-white the terminal's dark background takes.
-const DEEP: Record<string, string> = { orange: '#c2410c', green: '#15803d', teal: '#0f766e', blue: '#1d4ed8', purple: '#7e22ce', cyan: '#0e7490', red: '#b91c1c' }
-const SHIMMER_DESKTOP = Object.fromEntries(Object.entries(TONES).map(([k, v]) => [k, { bright: [v.bright[0] ?? v.solid, v.bright[1] ?? v.solid, v.bright[0] ?? v.solid, DEEP[k] ?? v.solid], dim: v.dim }]))
-const BRANCH_ROW = '#branch'
-const FLASH_MS = 2700
-const RUNNING_MAX_MS = 600_000
-const NO_REPO_DEPTH = 4
-const DOUBLE_MS = 450
-const FIND_LIMIT = 200
-const READ_REVEAL_LIMIT = 12
-const ACTIVITY_TTL_MS = 45_000
-const ADD_COLOR = '#98c379'
-const DEL_COLOR = '#e06c75'
-const THEME_FILE = '.local/state/omarchy/current/theme/colors.toml'
-const THEME_POLL_MS = 2000
-const FONT_SCRIPT =
-  'if command -v fc-list >/dev/null 2>&1; then f=$(fc-list ":charset=$1" file | head -n1 | cut -d: -f1); ' +
-  'else f=$(ls "$HOME"/Library/Fonts/*Nerd* /Library/Fonts/*Nerd* 2>/dev/null | head -n1); fi; ' +
-  '[ -n "$f" ] || { echo missing; exit 0; }; m=$(stat -c %Z "$f" 2>/dev/null || stat -f %c "$f"); p=$PPID; ' +
-  'while [ -n "$p" ] && [ "$p" -gt 1 ]; do c=$(ps -o comm= -p "$p" 2>/dev/null); c=$(basename "$c" 2>/dev/null | tr -d " "); case "$c" in ' +
-  'ghostty|kitty|alacritty|Alacritty|foot|footclient|wezterm-gui|konsole|gnome-terminal-|xterm|urxvt|st|Terminal|iTerm2) ' +
-  'e=$(ps -o etime= -p "$p" 2>/dev/null | awk -F\'[-:]\' \'{n=NF; s=$n+60*$(n-1); if (n>2) s+=3600*$(n-2); if (n>3) s+=86400*$(n-3); print s}\'); [ -n "$e" ] && [ $(( $(date +%s) - e )) -lt "$m" ] && echo stale || echo ok; exit 0;; esac; ' +
-  'p=$(ps -o ppid= -p "$p" 2>/dev/null | tr -d " "); done; echo ok'
-const PRUNE = ['.git', 'node_modules', 'target', '.venv', '__pycache__', 'dist', '.next']
-const HOME_PRUNE = ['Library', 'AppData', '.Trash']
-const SIZE_TIMEOUT_MS = 15_000
-const SIZE_JOBS = 2
-const SIZE_WALK_LIMIT = 50_000
 
-let blink: Timer | null = null
-let themePoll: Timer | null = null
-let themeMtime: number | null = null
-let gitWatched: string[] = []
-let gitSettle: Timer | null = null
-let generation = 0
-let lastPress = { key: '', at: 0 }
-let noNerd = false
-let glyphSetting = 'auto'
-let openWithSetting = 'preview'
-let previewed: { path: string; text: string; note: string } | null = null
-let previewRows = 20
-let followClaude = true
-let scanning: Promise<void> | null = null
-let scanJobs: Job[] = []
-let gitRun: Promise<void> | null = null
-let gitNext: Promise<void> | null = null
-let queuedReads: string[] = []
-let showReads = true
-let showWrites = true
-let searchIndex: { root: string; paths: Promise<string[]> } | null = null
-let activityId = 0
-let pointer = true
-let view = { from: 0, max: 0 }
-let nativeScroll = false
-// The desktop page can press a Button with a handle from a drawing the engine has already
-// replaced, which no onPress answers; the latest drawing's actions are kept here by key instead.
-let routePress: (key: string) => (() => void) | undefined = () => undefined
-let lastSync = 0
-let noDock = false
-// Set by an open nobody asked for, so the first terminal drawing checks the layout /filetree checks.
-let autoDock = false
-let home = ''
-let platform: Promise<'linux' | 'darwin' | 'win32'> | null = null
-let dirty: { root: string; files: Record<string, Change> } = { root: '', files: {} }
-let markId = 0
-let listSeq = 0
-let sizeDefault = false
-let sizeEpoch = 0
-let sizeActive = 0
-let sizeQueue: string[] = []
-const sizing = new Set<string>()
-const listLatest = new Map<string, number>()
-const unreadable = new Set<string>()
-const background = new Map<string, Background>()
+// Every function that takes $ is declared in this file: the host follows $ only into
+// functions declared alongside the hooks, never across an import.
 
-function osName($: EngineInterface): Promise<'linux' | 'darwin' | 'win32'> {
-  platform ??= (async () => {
+function osName($: EngineInterface): Promise<OS> {
+  rt.platform ??= (async () => {
     if ((await $.env.get('OS')) === 'Windows_NT') return 'win32'
     try {
       return (await $.process.run(['uname', '-s'], { timeoutMs: 3_000 })).stdout.trim() === 'Darwin' ? 'darwin' : 'linux'
@@ -135,22 +85,24 @@ function osName($: EngineInterface): Promise<'linux' | 'darwin' | 'win32'> {
       return 'linux'
     }
   })()
-  return platform
+  return rt.platform
 }
 
 async function cwdOf($: EngineInterface): Promise<string> {
   return posix(await $.session.cwd())
 }
 
-function clean(segs: Seg[]): Seg[] {
-  for (const seg of segs) for (const k of Object.keys(seg) as (keyof Seg)[]) if (seg[k] === undefined) delete seg[k]
-  return segs
+async function exists($: EngineInterface, path: string): Promise<boolean> {
+  try {
+    await $.fs.stat(path)
+    return true
+  } catch {
+    return false
+  }
 }
 
-function faint(hex: string): string {
-  const v = parseInt(hex.slice(1), 16)
-  const ch = (shift: number) => Math.round(0x26 + (((v >> shift) & 255) - 0x26) * 0.3)
-  return `#${[16, 8, 0].map(x => ch(x).toString(16).padStart(2, '0')).join('')}`
+async function git($: EngineInterface, cwd: string, args: string[], timeoutMs = 20_000) {
+  return $.process.run(['git', '--no-optional-locks', '-C', cwd, ...args], { timeoutMs, env: { GIT_OPTIONAL_LOCKS: '0' } })
 }
 
 async function get($: EngineInterface): Promise<FileTree> {
@@ -189,6 +141,17 @@ async function record($: EngineInterface, paths: string[], state: Touch['state']
   })
 }
 
+function clean(segs: Seg[]): Seg[] {
+  for (const seg of segs) for (const k of Object.keys(seg) as (keyof Seg)[]) if (seg[k] === undefined) delete seg[k]
+  return segs
+}
+
+function faint(hex: string): string {
+  const v = parseInt(hex.slice(1), 16)
+  const ch = (shift: number) => Math.round(0x26 + (((v >> shift) & 255) - 0x26) * 0.3)
+  return `#${[16, 8, 0].map(x => ch(x).toString(16).padStart(2, '0')).join('')}`
+}
+
 async function list($: EngineInterface, dir: string): Promise<FileNode[] | null> {
   try {
     const entries = await $.fs.list(dir)
@@ -205,12 +168,12 @@ async function list($: EngineInterface, dir: string): Promise<FileNode[] | null>
         }
       }),
     )
-    unreadable.delete(dir)
+    rt.unreadable.delete(dir)
     return toNodes(dir, resolved)
   } catch (err) {
     if (!(await exists($, dir))) return []
-    if (!unreadable.has(dir)) {
-      unreadable.add(dir)
+    if (!rt.unreadable.has(dir)) {
+      rt.unreadable.add(dir)
       $.ui.toast(`could not list ${shortPath(dir)}: ${err instanceof Error ? err.message : String(err)}`)
     }
     return null
@@ -219,21 +182,17 @@ async function list($: EngineInterface, dir: string): Promise<FileNode[] | null>
 
 async function loadDirs($: EngineInterface, dirs: string[]): Promise<Map<string, FileNode[]>> {
   const root = (await get($)).root
-  const seq = ++listSeq
-  for (const dir of dirs) listLatest.set(dir, seq)
+  const seq = ++rt.listSeq
+  for (const dir of dirs) rt.listLatest.set(dir, seq)
   const results = await Promise.all(dirs.map(async dir => [dir, await list($, dir)] as const))
   const listed = new Map<string, FileNode[]>()
   for (const [dir, kids] of results) {
-    if (listLatest.get(dir) !== seq) continue
-    listLatest.delete(dir)
+    if (rt.listLatest.get(dir) !== seq) continue
+    rt.listLatest.delete(dir)
     if (kids) listed.set(dir, kids)
   }
   await patch($, t => (t.root === root ? { nodes: replaceChildren(t.nodes, listed) } : {}))
   return listed
-}
-
-async function git($: EngineInterface, cwd: string, args: string[], timeoutMs = 20_000) {
-  return $.process.run(['git', '--no-optional-locks', '-C', cwd, ...args], { timeoutMs, env: { GIT_OPTIONAL_LOCKS: '0' } })
 }
 
 async function detectRepo($: EngineInterface): Promise<void> {
@@ -269,7 +228,7 @@ async function readGit($: EngineInterface): Promise<void> {
       if (others.exitCode === 0) for (const rel of others.stdout.split('\0').filter(Boolean)) files[join(root, rel)] = 'new'
     }
     for (const path of Object.keys(diff)) if (files[path] === 'new') delete diff[path]
-    dirty = { root, files }
+    rt.dirty = { root, files }
     await patch($, cur =>
       cur.root === root
         ? {
@@ -289,33 +248,33 @@ async function readGit($: EngineInterface): Promise<void> {
 }
 
 function refreshGit($: EngineInterface): Promise<void> {
-  if (!gitRun) {
-    gitRun = readGit($).finally(() => {
-      gitRun = null
+  if (!rt.gitRun) {
+    rt.gitRun = readGit($).finally(() => {
+      rt.gitRun = null
     })
-    return gitRun
+    return rt.gitRun
   }
   const rerun = () => {
-    gitNext = null
+    rt.gitNext = null
     return refreshGit($)
   }
-  gitNext ??= gitRun.then(rerun, rerun)
-  return gitNext
+  rt.gitNext ??= rt.gitRun.then(rerun, rerun)
+  return rt.gitNext
 }
 
 async function reset($: EngineInterface, root: string, focus = false): Promise<void> {
   const prev = await get($)
-  generation += 1
-  blink?.cancel()
-  blink = null
-  searchIndex = null
-  sizeEpoch += 1
-  sizeQueue = []
-  await put($, () => ({ ...emptyTree(root), showSize: sizeDefault }))
+  rt.generation += 1
+  rt.blink?.cancel()
+  rt.blink = null
+  rt.searchIndex = null
+  rt.sizeEpoch += 1
+  rt.sizeQueue = []
+  await put($, () => ({ ...emptyTree(root), showSize: settings.sizeDefault }))
   const title = `Files: ${root.split('/').pop() || root}`
-  autoDock = !focus
+  rt.autoDock = !focus
   if (focus) await $.ui.open({ id: PANE, title, focus: true })
-  else if (!noDock) await $.ui.open({ id: PANE, title })
+  else if (!rt.noDock) await $.ui.open({ id: PANE, title })
   await loadDirs($, [root])
   await detectRepo($)
   await refreshGit($)
@@ -342,11 +301,6 @@ async function revealPaths($: EngineInterface, paths: string[]): Promise<void> {
   }
 }
 
-function pruneArgs(root: string, ignored: string[] = []): string[] {
-  const names = broad(root) ? [...PRUNE, ...HOME_PRUNE] : PRUNE
-  return ['(', ...names.flatMap((name, i) => (i === 0 ? ['-name', name] : ['-o', '-name', name])), ...ignored.flatMap(p => ['-o', '-path', p]), ')', '-prune', '-o']
-}
-
 async function newer($: EngineInterface, paths: string[], sinceMs: number): Promise<string[]> {
   const stats = await Promise.all(
     paths.map(async p => {
@@ -358,14 +312,6 @@ async function newer($: EngineInterface, paths: string[], sinceMs: number): Prom
     }),
   )
   return stats.filter(Boolean)
-}
-
-function broad(root: string): boolean {
-  return root === home || root === '/' || /^[A-Za-z]:\/$/.test(root)
-}
-
-function rootOfDisk(root: string): boolean {
-  return root === '/' || /^[A-Za-z]:\/$/.test(root)
 }
 
 async function changedSince($: EngineInterface, root: string, since: Since, depth: number, ignored: string[] = []): Promise<string[]> {
@@ -381,20 +327,18 @@ async function changedSince($: EngineInterface, root: string, since: Since, dept
 
 async function changedInRepo($: EngineInterface, root: string, since: Since, before: Record<string, Change>, ignored: string[]): Promise<{ hits: string[]; gone: string[] }> {
   if (since.os !== 'win32') return { hits: await changedSince($, root, since, 0, ignored), gone: [] }
-  if (dirty.root !== root) return { hits: [], gone: [] }
-  const entries = Object.entries(dirty.files)
+  if (rt.dirty.root !== root) return { hits: [], gone: [] }
+  const entries = Object.entries(rt.dirty.files)
   const gone = entries.filter(([p, c]) => c === 'del' && before[p] !== 'del').map(([p]) => p)
   const live = entries.filter(([, c]) => c !== 'del').map(([p]) => p)
   return { hits: await newer($, live.slice(0, 4_000), since.ms), gone }
 }
 
-type Since = { ms: number; mark: string; os: 'linux' | 'darwin' | 'win32' }
-
 async function sinceNow($: EngineInterface, writes: boolean): Promise<Since> {
   const ms = await $.clock.now()
   const os = await osName($)
   if (os !== 'darwin' || !writes) return { ms, mark: '', os }
-  const mark = `${((await $.env.get('TMPDIR')) || '/tmp').replace(/\/+$/, '')}/filetree-${await $.session.id()}-${++markId}.mark`
+  const mark = `${((await $.env.get('TMPDIR')) || '/tmp').replace(/\/+$/, '')}/filetree-${await $.session.id()}-${++rt.markId}.mark`
   try {
     await $.process.run(['touch', mark], { timeoutMs: 3_000 })
     return { ms, mark, os }
@@ -440,34 +384,34 @@ async function dirSize($: EngineInterface, dir: string): Promise<number> {
 }
 
 function pumpSizes($: EngineInterface): void {
-  while (sizeActive < SIZE_JOBS && sizeQueue.length) {
-    const dir = sizeQueue.shift() ?? ''
-    const epoch = sizeEpoch
-    sizing.add(dir)
-    sizeActive += 1
+  while (rt.sizeActive < SIZE_JOBS && rt.sizeQueue.length) {
+    const dir = rt.sizeQueue.shift() ?? ''
+    const epoch = rt.sizeEpoch
+    rt.sizing.add(dir)
+    rt.sizeActive += 1
     void dirSize($, dir)
       .then(async bytes => {
-        if (epoch === sizeEpoch) return patch($, cur => (inside(cur.root, dir) ? { dirSizes: { ...cur.dirSizes, [dir]: bytes } } : {}))
+        if (epoch === rt.sizeEpoch) return patch($, cur => (inside(cur.root, dir) ? { dirSizes: { ...cur.dirSizes, [dir]: bytes } } : {}))
         const cur = await get($)
-        if (cur.showSize && inside(cur.root, dir) && !(dir in cur.dirSizes) && !sizeQueue.includes(dir)) sizeQueue.push(dir)
+        if (cur.showSize && inside(cur.root, dir) && !(dir in cur.dirSizes) && !rt.sizeQueue.includes(dir)) rt.sizeQueue.push(dir)
       })
       .catch(() => undefined)
       .finally(() => {
-        sizing.delete(dir)
-        sizeActive -= 1
+        rt.sizing.delete(dir)
+        rt.sizeActive -= 1
         pumpSizes($)
       })
   }
 }
 
 function wantSizes($: EngineInterface, dirs: string[]): void {
-  for (const dir of dirs) if (!sizing.has(dir) && !sizeQueue.includes(dir)) sizeQueue.push(dir)
+  for (const dir of dirs) if (!rt.sizing.has(dir) && !rt.sizeQueue.includes(dir)) rt.sizeQueue.push(dir)
   pumpSizes($)
 }
 
 async function staleSizes($: EngineInterface, paths?: string[]): Promise<void> {
-  sizeEpoch += 1
-  sizeQueue = []
+  rt.sizeEpoch += 1
+  rt.sizeQueue = []
   await patch($, cur => {
     if (!paths) return { dirSizes: {} }
     const keep: Record<string, number> = {}
@@ -482,8 +426,8 @@ function openDirs(t: FileTree): string[] {
 }
 
 function keepTop(cur: FileTree, expanded: string[]): Partial<FileTree> {
-  if (followClaude) return { scroll: null }
-  const top = visibleRows(cur)[cur.scroll ?? view.from]?.node.id
+  if (settings.followClaude) return { scroll: null }
+  const top = visibleRows(cur)[cur.scroll ?? rt.view.from]?.node.id
   const at = top ? visibleRows({ ...cur, expanded }).findIndex(r => r.node.id === top) : -1
   return at < 0 ? {} : { scroll: at }
 }
@@ -491,10 +435,10 @@ function keepTop(cur: FileTree, expanded: string[]): Partial<FileTree> {
 async function flash($: EngineInterface, tones: Record<string, string>): Promise<void> {
   const unique = Object.keys(tones)
   if (unique.length === 0) return
-  const mine = ++generation
+  const mine = ++rt.generation
   const root = (await get($)).root
-  blink?.cancel()
-  blink = null
+  rt.blink?.cancel()
+  rt.blink = null
   await patch($, cur => {
     if (cur.root !== root) return {}
     const open = new Set(cur.expanded)
@@ -528,11 +472,11 @@ async function flash($: EngineInterface, tones: Record<string, string>): Promise
       ...keepTop(cur, [...open]),
     }
   })
-  if (generation !== mine) return
-  blink = $.clock.after(FLASH_MS, () => {
-    if (generation !== mine) return
-    blink = null
-    void patch($, cur => (generation === mine ? { flash: [], flashDim: [], flashOn: false, flashTones: {} } : {}))
+  if (rt.generation !== mine) return
+  rt.blink = $.clock.after(FLASH_MS, () => {
+    if (rt.generation !== mine) return
+    rt.blink = null
+    void patch($, cur => (rt.generation === mine ? { flash: [], flashDim: [], flashOn: false, flashTones: {} } : {}))
   })
 }
 
@@ -543,13 +487,6 @@ async function followCwd($: EngineInterface): Promise<boolean> {
   await reset($, cwd)
   return true
 }
-
-type Pending = { actions: GitAction[]; ids: number[]; command: string; head: string }
-type Job = { actions: GitAction[]; since: Since; initRepo: boolean; readOnly: boolean }
-type Background = { p: Pending | null; job: Job; reads: string[]; cwd: string }
-type GitOperation = NonNullable<BuiltinToolResults['Bash']['gitOperation']>
-// 'unknown' is a command with no evidence of how it went: its chip is taken down.
-type Outcome = { state: 'done' | 'failed' | 'unknown'; label: string; detail: string }
 
 const PROOF: Record<string, (op: GitOperation) => boolean> = {
   push: op => Boolean(op.push),
@@ -562,7 +499,7 @@ const PROOF: Record<string, (op: GitOperation) => boolean> = {
 
 async function startGit($: EngineInterface, actions: GitAction[]): Promise<number[]> {
   const now = await $.clock.now()
-  const ids = actions.map(() => ++activityId)
+  const ids = actions.map(() => ++rt.activityId)
   await setActivities($, cur => [
     ...cur.filter(a => a.state === 'running' || now - a.at < ACTIVITY_TTL_MS),
     ...actions.map((a, i) => ({
@@ -631,7 +568,7 @@ function proven(p: Pending | null, results: Outcome[], cwd: string): GitAction[]
   if (!p) return []
   return p.actions
     .filter((a, i) => results[i]?.state === 'done' && results[i]?.label === a.done)
-    .map(a => (a.paths ? { ...a, paths: a.paths.map(x => resolve(cwd, x, home)) } : a))
+    .map(a => (a.paths ? { ...a, paths: a.paths.map(x => resolve(cwd, x, rt.home)) } : a))
 }
 
 function taskEnds(text: string): [string, string][] {
@@ -643,15 +580,15 @@ function taskEnds(text: string): [string, string][] {
 }
 
 async function settleBackground($: EngineInterface, text: string): Promise<void> {
-  if (background.size === 0 || !text.includes('<task-notification>')) return
+  if (rt.background.size === 0 || !text.includes('<task-notification>')) return
   for (const [id, status] of taskEnds(text)) {
-    const task = background.get(id)
+    const task = rt.background.get(id)
     if (!task) continue
-    background.delete(id)
+    rt.background.delete(id)
     const ok = status === 'completed'
     const results = task.p ? await outcomes($, task.p, ok, undefined) : []
     if (task.p) await finishGit($, task.p, results)
-    if (showReads) queuedReads.push(...task.reads)
+    if (settings.showReads) rt.queuedReads.push(...task.reads)
     scheduleScan($, { ...task.job, actions: proven(task.p, results, task.cwd) })
   }
 }
@@ -671,8 +608,8 @@ async function gitPaths($: EngineInterface, root: string, prefix: string, commit
 // Outside a repo the cwd's own .git is watched, so a git init there is seen as it lands.
 async function gitWatch($: EngineInterface, cwd: string): Promise<string[]> {
   const gd = (await gitDir($, cwd)) || join(cwd, '.git')
-  gitWatched = [join(gd, 'index'), join(gd, 'HEAD')]
-  return gitWatched
+  rt.gitWatched = [join(gd, 'index'), join(gd, 'HEAD')]
+  return rt.gitWatched
 }
 
 async function gitDir($: EngineInterface, cwd: string): Promise<string> {
@@ -682,7 +619,7 @@ async function gitDir($: EngineInterface, cwd: string): Promise<string> {
       const st = await $.fs.stat(dot)
       if (st.kind === 'dir') return dot
       const ref = /^gitdir:\s*(.+)$/m.exec(String(await $.fs.read(dot)))?.[1]?.trim()
-      if (ref) return resolve(dir, ref, home)
+      if (ref) return resolve(dir, ref, rt.home)
     } catch {
       const up = dirname(dir)
       if (up === dir) return ''
@@ -696,10 +633,10 @@ async function gitDir($: EngineInterface, cwd: string): Promise<string> {
 
 async function sync($: EngineInterface, force = false): Promise<void> {
   const now = await $.clock.now()
-  if (!force && now - lastSync < 2_000) return
-  lastSync = now
-  searchIndex = null
-  if (!themePoll) await loadTheme($)
+  if (!force && now - rt.lastSync < 2_000) return
+  rt.lastSync = now
+  rt.searchIndex = null
+  if (!rt.themePoll) await loadTheme($)
   const t = await get($)
   if (!t.root) return
   await loadDirs($, [t.root, ...openDirs(t)])
@@ -713,18 +650,9 @@ async function copyPath($: EngineInterface, id: string, absolute: boolean, surfa
   $.ui.toast(done.isCopied ? `Copied ${text}` : 'Could not copy the path')
 }
 
-async function exists($: EngineInterface, path: string): Promise<boolean> {
-  try {
-    await $.fs.stat(path)
-    return true
-  } catch {
-    return false
-  }
-}
-
 async function afterBash($: EngineInterface, jobs: Job[]): Promise<void> {
-  const reads = queuedReads
-  queuedReads = []
+  const reads = rt.queuedReads
+  rt.queuedReads = []
   if (await followCwd($)) return
   const t = await get($)
   if (!t.root) return
@@ -732,13 +660,13 @@ async function afterBash($: EngineInterface, jobs: Job[]): Promise<void> {
   const writers = jobs.filter(j => !j.readOnly)
   const since = (writers.length ? writers : jobs).reduce((a, j) => (j.since.ms < a.ms ? j.since : a), (writers[0] ?? jobs[0])?.since ?? { ms: 0, mark: '', os: 'linux' as const })
   const writes = !jobs.every(j => j.readOnly)
-  const before = dirty.root === t.root ? dirty.files : {}
+  const before = rt.dirty.root === t.root ? rt.dirty.files : {}
   if (jobs.some(j => j.initRepo)) await detectRepo($)
   else if (!t.top && (await exists($, join(t.root, '.git')))) await detectRepo($)
   const probed = await get($)
   if (probed.top && (writes || probed.top !== t.top)) await refreshGit($)
   if (writes) {
-    searchIndex = null
+    rt.searchIndex = null
     await staleSizes($)
   }
   const fresh = await get($)
@@ -761,11 +689,11 @@ async function afterBash($: EngineInterface, jobs: Job[]): Promise<void> {
     })
     const present = new Set((await get($)).nodes.map(n => n.id))
     const touchTone = actions.find(a => !['commit', 'push', 'add'].includes(a.verb))?.tone ?? 'orange'
-    if (showWrites) for (const id of hits) if (present.has(id)) tones[id] = touchTone
+    if (settings.showWrites) for (const id of hits) if (present.has(id)) tones[id] = touchTone
     const edited = hits.filter(id => present.has(id))
-    if (showWrites && edited.length) await record($, edited, 'edited', { verb: 'edit', state: 'done', path: edited[0] ?? '', count: edited.length, detail: '' })
+    if (settings.showWrites && edited.length) await record($, edited, 'edited', { verb: 'edit', state: 'done', path: edited[0] ?? '', count: edited.length, detail: '' })
   }
-  if (showReads) {
+  if (settings.showReads) {
     const found: string[] = []
     for (const r of reads) {
       if (found.length >= READ_REVEAL_LIMIT) break
@@ -778,7 +706,7 @@ async function afterBash($: EngineInterface, jobs: Job[]): Promise<void> {
       await record($, found, 'read', { verb: 'read', state: 'done', path: found[0] ?? '', count: found.length, detail: '' })
     }
   }
-  if (showWrites && actions.length) {
+  if (settings.showWrites && actions.length) {
     const final = await get($)
     const committed = actions.some(a => a.verb === 'commit')
     if ((committed || actions.some(a => a.verb === 'add')) && final.top) {
@@ -803,12 +731,12 @@ async function afterBash($: EngineInterface, jobs: Job[]): Promise<void> {
 }
 
 function scheduleScan($: EngineInterface, job: Job): void {
-  scanJobs.push(job)
-  if (scanning) return
-  scanning = (async () => {
-    while (scanJobs.length) {
-      const jobs = scanJobs
-      scanJobs = []
+  rt.scanJobs.push(job)
+  if (rt.scanning) return
+  rt.scanning = (async () => {
+    while (rt.scanJobs.length) {
+      const jobs = rt.scanJobs
+      rt.scanJobs = []
       try {
         await afterBash($, jobs)
       } finally {
@@ -817,19 +745,19 @@ function scheduleScan($: EngineInterface, job: Job): void {
       }
     }
   })().finally(() => {
-    scanning = null
+    rt.scanning = null
   })
 }
 
 async function touched($: EngineInterface, paths: string[], tone: string, show: boolean): Promise<void> {
-  if (tone !== 'purple' && previewed && paths.map(posix).includes(previewed.path)) previewed = null
+  if (tone !== 'purple' && rt.previewed && paths.map(posix).includes(rt.previewed.path)) rt.previewed = null
   if (await followCwd($)) return
   const t = await get($)
   if (!t.root) return
   const within = paths.map(posix).filter(p => inside(t.root, p))
   if (within.length === 0) return
   if (tone !== 'purple') {
-    searchIndex = null
+    rt.searchIndex = null
     await staleSizes($, within)
     await revealPaths($, within.map(dirname))
     await loadDirs($, [...new Set(within.map(dirname))].filter(d => inside(t.root, d)))
@@ -886,21 +814,21 @@ async function listAll($: EngineInterface, t: FileTree): Promise<string[] | null
 }
 
 function indexPaths($: EngineInterface, t: FileTree): Promise<string[]> {
-  if (searchIndex?.root !== t.root) {
+  if (rt.searchIndex?.root !== t.root) {
     const index: { root: string; paths: Promise<string[]> } = {
       root: t.root,
       paths: listAll($, t).then(paths => {
-        if (paths === null && searchIndex === index) searchIndex = null
+        if (paths === null && rt.searchIndex === index) rt.searchIndex = null
         return paths ?? []
       }),
     }
-    searchIndex = index
+    rt.searchIndex = index
   }
-  return searchIndex.paths
+  return rt.searchIndex.paths
 }
 
 async function search($: EngineInterface, query: string): Promise<string[]> {
-  if (!(await get($)).query.trim()) searchIndex = null
+  if (!(await get($)).query.trim()) rt.searchIndex = null
   await patch($, () => ({ query }))
   const q = query.trim().toLowerCase()
   if (!q) return []
@@ -978,7 +906,7 @@ async function loadPreview($: EngineInterface, path: string): Promise<void> {
   lines = lines.map(l => (l.length > PREVIEW_LINE ? `${l.slice(0, PREVIEW_LINE)}…` : l))
   const fit = fitSerialized(lines, PREVIEW_CHARS)
   if (total > PREVIEW_CHARS || fit.length < lines.length) note = `first ${fit.length.toLocaleString('en')} lines of ${total.toLocaleString('en')} characters`
-  previewed = { path, text: fit.join('\n'), note }
+  rt.previewed = { path, text: fit.join('\n'), note }
 }
 
 async function showPreview($: EngineInterface, path: string): Promise<void> {
@@ -992,7 +920,7 @@ async function closePreview($: EngineInterface): Promise<void> {
 
 async function scrollPreview($: EngineInterface, by: number): Promise<void> {
   const t = await get($)
-  const last = Math.max(0, (previewed?.text.split('\n').length ?? 1) - previewRows)
+  const last = Math.max(0, (rt.previewed?.text.split('\n').length ?? 1) - rt.previewRows)
   const top = Math.max(0, Math.min(last, t.previewTop + by))
   if (top !== t.previewTop) await patch($, () => ({ previewTop: top }))
 }
@@ -1021,7 +949,7 @@ function previewLines(text: string, top: number, rows: number, markdown: boolean
 
 async function openFile($: EngineInterface, path: string, external = false): Promise<void> {
   // The setting always has a value: a blank one falls back to the default, preview.
-  const setting = openWithSetting.trim() || 'preview'
+  const setting = settings.openWith.trim() || 'preview'
   if (!external && setting === 'preview') return showPreview($, path)
   const os = await osName($)
   const native = (p: string) => (os === 'win32' ? p.replace(/\//g, '\\') : p)
@@ -1046,8 +974,8 @@ async function toggle($: EngineInterface, n: FileNode): Promise<void> {
 
 async function press($: EngineInterface, n: FileNode): Promise<void> {
   const now = await $.clock.now()
-  const isDouble = lastPress.key === n.id && now - lastPress.at < DOUBLE_MS
-  lastPress = { key: isDouble ? '' : n.id, at: now }
+  const isDouble = rt.lastPress.key === n.id && now - rt.lastPress.at < DOUBLE_MS
+  rt.lastPress = { key: isDouble ? '' : n.id, at: now }
   if (!isDouble) {
     await toggle($, n)
     return
@@ -1063,7 +991,7 @@ async function openNode($: EngineInterface, n: FileNode): Promise<void> {
 // The built-in search tools read like rg and find do: the files they list shimmer purple.
 // Grep in content mode lists no filenames, so its lines' path prefixes stand in.
 async function searched($: EngineInterface, e: { tool: string }, next: (e: { tool: string }) => Promise<ResultOf['tool.call']>): Promise<ResultOf['tool.call']> {
-  if ((e.tool !== 'Grep' && e.tool !== 'Glob') || !showReads) return next(e)
+  if ((e.tool !== 'Grep' && e.tool !== 'Glob') || !settings.showReads) return next(e)
   const result = await next(e)
   if (result.deny || result.isError || !result.result || typeof result.result !== 'object') return result
   const out = result.result as { filenames?: unknown; content?: unknown }
@@ -1075,7 +1003,7 @@ async function searched($: EngineInterface, e: { tool: string }, next: (e: { too
     }
   if (!names.length) return result
   const cwd = await cwdOf($)
-  queuedReads.push(...[...new Set(names.map(n => resolve(cwd, n, home)))].slice(0, 60))
+  rt.queuedReads.push(...[...new Set(names.map(n => resolve(cwd, n, rt.home)))].slice(0, 60))
   scheduleScan($, { actions: [], since: await sinceNow($, false), initRepo: false, readOnly: true })
   return result
 }
@@ -1119,7 +1047,7 @@ function capRows(specs: RowSpec[], at: number, note: (text: string) => RowSpec):
   if (below) specs.push(note(`  ⋮ ${below.toLocaleString('en')} more rows; search to find the rest`))
 }
 
-// The longest run of whole lines whose JSON form, with the view's buttons, name, note and
+// The longest run of whole lines whose JSON form, with the rt.view's buttons, name, note and
 // path around it, stays within RENDER_CHARS. loadPreview already cuts each line to 2,000
 // characters, so the first line always fits.
 function cutLines(text: string, chrome: number): string {
@@ -1143,16 +1071,16 @@ async function loadTheme($: EngineInterface): Promise<void> {
   try {
     const stat = await $.fs.stat(path)
     if (stat.kind !== 'file') throw new Error('no theme file')
-    themePoll ??= $.clock.every(THEME_POLL_MS, () => void loadTheme($))
-    if (stat.mtimeMs === themeMtime) return
+    rt.themePoll ??= $.clock.every(THEME_POLL_MS, () => void loadTheme($))
+    if (stat.mtimeMs === rt.themeMtime) return
     await $.state.set(THEME, parseTheme(String(await $.fs.read(path))))
-    themeMtime = stat.mtimeMs
+    rt.themeMtime = stat.mtimeMs
   } catch {
-    themePoll?.cancel()
-    themePoll = null
-    if (themeMtime === 0) return
+    rt.themePoll?.cancel()
+    rt.themePoll = null
+    if (rt.themeMtime === 0) return
     await $.state.set(THEME, DEFAULT_THEME)
-    themeMtime = 0
+    rt.themeMtime = 0
   }
 }
 
@@ -1181,34 +1109,30 @@ function cardOf(now: Now | null, git: Activity | undefined, where: (p: string) =
   return { tone: 'green', phase, title: `Claude committed ${now.count} ${now.count === 1 ? 'file' : 'files'}`, sub, icon: 'check', live: false }
 }
 
-function shortPath(path: string): string {
-  return home && inside(home, path) ? `~${path.slice(home.length)}` : path
-}
-
 export const register: Register = (on, options) => {
-  glyphSetting = typeof options?.glyphs === 'string' ? options.glyphs : 'auto'
+  settings.glyphs = typeof options?.glyphs === 'string' ? options.glyphs : 'auto'
   const activity = typeof options?.activity === 'string' ? options.activity : 'reads and writes'
-  showReads = activity.includes('reads')
-  showWrites = activity.includes('writes')
-  followClaude = options?.follow !== 'off'
-  sizeDefault = options?.column === 'size'
-  openWithSetting = typeof options?.open === 'string' ? options.open : 'preview'
+  settings.showReads = activity.includes('reads')
+  settings.showWrites = activity.includes('writes')
+  settings.followClaude = options?.follow !== 'off'
+  settings.sizeDefault = options?.column === 'size'
+  settings.openWith = typeof options?.open === 'string' ? options.open : 'preview'
   on('session.start', async ($, e, next) => {
     await $.command.register({ name: 'filetree', description: 'Show the file tree of the working directory' })
     const windows = (await $.env.get('OS')) === 'Windows_NT'
     useDrives(windows)
-    home = posix(((await $.env.get('HOME')) || (await $.env.get('USERPROFILE')) || '').replace(/[\\/]+$/, ''))
-    activityId = Math.max(activityId, ...(await activities($)).map(a => a.id))
+    rt.home = posix(((await $.env.get('HOME')) || (await $.env.get('USERPROFILE')) || '').replace(/[\\/]+$/, ''))
+    rt.activityId = Math.max(rt.activityId, ...(await activities($)).map(a => a.id))
     void (async () => {
-      pointer = await finePointerOk($)
+      rt.pointer = await finePointerOk($)
       try {
         const remote = Boolean((await $.env.get('SSH_CONNECTION')) || (await $.env.get('SSH_TTY')))
-        noNerd = !remote && (windows || (await fontState($, 'f04eb')) !== 'ok')
+        rt.noNerd = !remote && (windows || (await fontState($, 'f04eb')) !== 'ok')
       } catch {
-        noNerd = true
+        rt.noNerd = true
       }
-      themePoll?.cancel()
-      themePoll = null
+      rt.themePoll?.cancel()
+      rt.themePoll = null
       await loadTheme($)
       const t = await get($)
       if (t.flashOn) await patch($, () => ({ flash: [], flashDim: [], flashOn: false, flashTones: {} }))
@@ -1217,8 +1141,8 @@ export const register: Register = (on, options) => {
       await update($, CLAUDE, cur => (cur?.now?.state === 'running' ? { ...cur, now: { ...cur.now, state: 'failed' as const }, touched: cur.touched.filter(x => x.state !== 'reading' && x.state !== 'editing') } : (cur ?? { now: null, touched: [] })))
       const cwd = await cwdOf($)
       if (!t.root || t.nodes.length === 0 || t.root !== cwd) await reset($, cwd)
-      else if (!noDock) {
-        autoDock = true
+      else if (!rt.noDock) {
+        rt.autoDock = true
         await $.ui.open({ id: PANE, title: `Files: ${t.root.split('/').pop() || t.root}` })
       }
     })()
@@ -1231,7 +1155,7 @@ export const register: Register = (on, options) => {
     const terminal = await $.session.surfaces().then(s => s.includes('terminal'), () => true)
     if (terminal && !e.presentation.isFullscreen) return { text: 'filetree shows in the sidebar, which needs the fullscreen layout. Run /tui fullscreen, then /filetree.' }
     if (terminal && e.presentation.columns < MIN_COLUMNS) return { text: 'filetree shows in the sidebar, which needs a terminal at least 110 columns wide. Widen it, then run /filetree.' }
-    noDock = false
+    rt.noDock = false
     const cwd = await cwdOf($)
     await reset($, cwd, true)
     return { text: `filetree ${VERSION}: File tree on ${shortPath(cwd)}.` }
@@ -1247,9 +1171,9 @@ export const register: Register = (on, options) => {
         : 'notebook_path' in e && typeof e.notebook_path === 'string'
           ? posix(e.notebook_path)
           : ''
-    const was = file && showWrites ? (await claudeLog($)).touched.find(x => x.path === file) : undefined
+    const was = file && settings.showWrites ? (await claudeLog($)).touched.find(x => x.path === file) : undefined
     const editing = (state: Now['state']) => ({ verb: 'edit' as const, state, path: file, count: 1, detail: '' })
-    if (file && showWrites) await record($, [file], 'editing', editing('running'))
+    if (file && settings.showWrites) await record($, [file], 'editing', editing('running'))
     const actions = gitActions(command)
     const quiet = !actions.length && readOnly(command)
     const since = await sinceNow($, e.tool === 'Bash' && !quiet)
@@ -1260,7 +1184,7 @@ export const register: Register = (on, options) => {
     try {
       result = await next(e)
     } catch (err) {
-      if (file && showWrites) await record($, [file], was?.state ?? null, editing('failed'))
+      if (file && settings.showWrites) await record($, [file], was?.state ?? null, editing('failed'))
       if (pending) await finishGit($, pending, failAll(pending))
       if (since.mark) void $.process.run(['rm', '-f', since.mark], { timeoutMs: 3_000 }).catch(() => undefined)
       throw err
@@ -1269,7 +1193,7 @@ export const register: Register = (on, options) => {
       const ids = pending.ids
       void setActivities($, cur => cur.filter(a => !ids.includes(a.id)))
     }
-    if (file && showWrites) {
+    if (file && settings.showWrites) {
       const ok = !result.deny && !result.isError
       await record($, [file], ok ? 'edited' : (was?.state ?? null), editing(ok ? 'done' : 'failed'))
     }
@@ -1279,22 +1203,22 @@ export const register: Register = (on, options) => {
     }
     if (e.tool === 'Bash') {
       const out: Partial<BuiltinToolResults['Bash']> = !result.isError && result.result && typeof result.result === 'object' ? result.result : {}
-      const reads = showReads ? readTargets(command, cwd, typeof out.stdout === 'string' ? out.stdout : '', home) : []
+      const reads = settings.showReads ? readTargets(command, cwd, typeof out.stdout === 'string' ? out.stdout : '', rt.home) : []
       const job: Job = { actions: [], since, initRepo: actions.some(a => a.init), readOnly: quiet || result.isReadOnly === true }
-      if (out.backgroundTaskId) background.set(out.backgroundTaskId, { p: pending, job, reads, cwd })
+      if (out.backgroundTaskId) rt.background.set(out.backgroundTaskId, { p: pending, job, reads, cwd })
       else void (async () => {
         const results = pending ? await outcomes($, pending, !result.isError, out.gitOperation) : []
         if (pending) await finishGit($, pending, results)
-        queuedReads.push(...reads)
+        rt.queuedReads.push(...reads)
         scheduleScan($, { ...job, actions: proven(pending, results, cwd) })
       })()
       if (/(^|[;&|\s])(cd|pushd|popd)(\s|$)/.test(command)) $.clock.after(400, () => void followCwd($))
-    } else if (file) void touched($, [file], 'orange', showWrites)
+    } else if (file) void touched($, [file], 'orange', settings.showWrites)
     return result
   })
 
   on('tool.call', { tool: 'Read' }, async ($, e, next) => {
-    if (e.tool !== 'Read' || !showReads) return next(e)
+    if (e.tool !== 'Read' || !settings.showReads) return next(e)
     const file = posix(e.file_path)
     const was = (await claudeLog($)).touched.find(x => x.path === file)
     await record($, [file], 'reading', { verb: 'read', state: 'running', path: file, count: 1, detail: '' })
@@ -1324,21 +1248,21 @@ export const register: Register = (on, options) => {
       return {}
     }
     if (typeof data.scrollTo === 'number') {
-      const to = Math.round(Math.max(0, Math.min(1, data.scrollTo)) * view.max)
+      const to = Math.round(Math.max(0, Math.min(1, data.scrollTo)) * rt.view.max)
       if (to !== t.scroll) await patch($, () => ({ scroll: to }))
       return {}
     }
     if (typeof data.press === 'string') {
       const n = t.nodes.find(x => x.id === data.press) ?? rowsOf(t).find(r => r.node.id === data.press)?.node
       if (!n) return {}
-      if (t.scroll === null) await patch($, () => ({ scroll: view.from }))
+      if (t.scroll === null) await patch($, () => ({ scroll: rt.view.from }))
       if (data.ctrl || data.shift) await openNode($, n)
       else await press($, n)
       return {}
     }
     if (typeof data.key !== 'string') return {}
     if (t.preview) {
-      const page = Math.max(1, previewRows - 2)
+      const page = Math.max(1, rt.previewRows - 2)
       const by: Record<string, number> = { up: -1, k: -1, down: 1, j: 1, pageup: -page, pagedown: page, home: -Infinity, end: Infinity }
       if (data.key === 'left' || data.key === 'h') await closePreview($)
       else if (data.key in by) await scrollPreview($, by[data.key] ?? 0)
@@ -1390,10 +1314,10 @@ export const register: Register = (on, options) => {
   // settles into one resync 300 ms after the last.
   on('classic.FileChanged', async ($, e, next) => {
     const result = await next(e)
-    if (gitWatched.includes(posix(e.file_path))) {
-      gitSettle?.cancel()
-      gitSettle = $.clock.after(300, () => {
-        gitSettle = null
+    if (rt.gitWatched.includes(posix(e.file_path))) {
+      rt.gitSettle?.cancel()
+      rt.gitSettle = $.clock.after(300, () => {
+        rt.gitSettle = null
         void (async () => {
           if (!(await get($)).top) await detectRepo($)
           await sync($, true)
@@ -1410,13 +1334,13 @@ export const register: Register = (on, options) => {
   })
 
   on('ui.scroll', { component: 'Pane', requestId: PANE }, async ($, e, next) => {
-    if (nativeScroll) return next(e)
+    if (rt.nativeScroll) return next(e)
     const t = await get($)
     if (t.preview) {
       await scrollPreview($, Math.sign(e.by) * Math.max(3, Math.abs(e.by)))
       return {}
     }
-    const to = Math.max(0, Math.min(view.max, (t.scroll ?? view.from) + Math.sign(e.by) * Math.max(3, Math.abs(e.by))))
+    const to = Math.max(0, Math.min(rt.view.max, (t.scroll ?? rt.view.from) + Math.sign(e.by) * Math.max(3, Math.abs(e.by))))
     if (to !== t.scroll) await patch($, () => ({ scroll: to }))
     return {}
   })
@@ -1430,7 +1354,7 @@ export const register: Register = (on, options) => {
     const mentions = [...e.text.matchAll(/@([^\s"'`]+)/g)]
       .map(m => (m[1] ?? '').replace(/[.,;:!?)]+$/, ''))
       .filter(Boolean)
-      .map(p => resolve(t.root, p, home))
+      .map(p => resolve(t.root, p, rt.home))
       .filter(p => inside(t.root, p))
     if (mentions.length) {
       void (async () => {
@@ -1455,7 +1379,7 @@ export const register: Register = (on, options) => {
   })
 
   on('ui.press', { component: 'Pane', requestId: PANE }, async ($, e, next) => {
-    const run = e.surface === 'desktop' ? routePress(e.element) : undefined
+    const run = e.surface === 'desktop' ? rt.routePress(e.element) : undefined
     if (!run) return next(e)
     run()
     return { element: e.element }
@@ -1464,32 +1388,32 @@ export const register: Register = (on, options) => {
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e, next) => {
     if (e.surface !== 'terminal' && e.surface !== 'desktop') return next(e)
     const vp = e.viewport
-    const cramped = e.surface === 'terminal' && autoDock && vp !== undefined && (vp.isFullscreen === false || vp.columns < MIN_COLUMNS)
-    if (e.surface === 'terminal' && vp !== undefined) autoDock = false
+    const cramped = e.surface === 'terminal' && rt.autoDock && vp !== undefined && (vp.isFullscreen === false || vp.columns < MIN_COLUMNS)
+    if (e.surface === 'terminal' && vp !== undefined) rt.autoDock = false
     if (e.surface === 'terminal' && (e.props.placement === 'inline' || cramped)) {
-      noDock = true
+      rt.noDock = true
       void $.ui.close({ id: PANE }).catch(() => undefined)
       const { Box: Empty } = $.ui.resolve(e)
       return <Empty />
     }
-    const unicode = glyphSetting === 'plain' || (glyphSetting === 'auto' && (noNerd || e.surface === 'desktop'))
+    const unicode = settings.glyphs === 'plain' || (settings.glyphs === 'auto' && (rt.noNerd || e.surface === 'desktop'))
     const { Box, Text, Button, Input, Client } = $.ui.resolve(e)
     const t = await get($)
     const theme: Theme = (await $.state.get(THEME)).value ?? DEFAULT_THEME
     // The desktop tab never hands the wheel or the scrollbar drag to the pane, so
     // there it draws every row and lets the engine scroll the body.
-    nativeScroll = e.surface === 'desktop'
+    rt.nativeScroll = e.surface === 'desktop'
     // A translucent accent reads on both of the desktop app's themes; the terminal keeps the theme's selection.
-    const rowColors = nativeScroll
+    const rowColors = rt.nativeScroll
       ? { activeBg: `${theme.accent}38`, hoverBg: '#8080801f', tones: SHIMMER_DESKTOP }
       : { activeBg: theme.selection, hoverBg: faint(theme.selection), tones: SHIMMER }
     if (t.preview) {
-      if (previewed?.path !== t.preview) await loadPreview($, t.preview)
-      const p = previewed
+      if (rt.previewed?.path !== t.preview) await loadPreview($, t.preview)
+      const p = rt.previewed
       const markdown = /\.(md|markdown|mdx)$/i.test(t.preview)
       const all = (p?.text ?? '').split('\n').length
-      previewRows = nativeScroll ? all : Math.max(4, (e.props.scroll?.bodyRows ?? 40) - (p?.note ? 2 : 1))
-      const win = previewLines(p?.text ?? '', nativeScroll ? 0 : Math.min(t.previewTop, Math.max(0, all - previewRows)), previewRows, markdown)
+      rt.previewRows = rt.nativeScroll ? all : Math.max(4, (e.props.scroll?.bodyRows ?? 40) - (p?.note ? 2 : 1))
+      const win = previewLines(p?.text ?? '', rt.nativeScroll ? 0 : Math.min(t.previewTop, Math.max(0, all - rt.previewRows)), rt.previewRows, markdown)
       const name = t.preview !== t.root && inside(t.root, t.preview) ? relative(t.root, t.preview) : shortPath(t.preview)
       if (e.surface === 'desktop') {
         // The desktop page refuses a Code or Markdown drawn inside a Client, so the preview is
@@ -1500,7 +1424,7 @@ export const register: Register = (on, options) => {
         const note = [p?.note ?? '', cut.length < whole.length ? `first ${shownLines.toLocaleString('en')} of ${whole.split('\n').length.toLocaleString('en')} lines; Open in app shows the rest` : ''].filter(Boolean).join(' · ')
         const path = t.preview
         const actions = { back: () => void closePreview($), external: () => void openFile($, path, true) }
-        routePress = key => (key === 'back' ? actions.back : key === 'external' ? actions.external : undefined)
+        rt.routePress = key => (key === 'back' ? actions.back : key === 'external' ? actions.external : undefined)
         return desktopPreview($.ui.resolve(e), { name, note, markdown, text: cut, path }, actions, theme.muted)
       }
       return (
@@ -1532,14 +1456,14 @@ export const register: Register = (on, options) => {
     const width = Math.max(24, e.props.bodyColumns)
     const rows = rowsOf(t)
     const fixed = 2 + (t.top ? (t.branch ? 1 : 0) : 1) + (t.selected || latest ? 1 : 0)
-    const room = nativeScroll ? Math.max(1, rows.length) : Math.max(5, (e.props.scroll?.bodyRows ?? 40) - fixed)
+    const room = rt.nativeScroll ? Math.max(1, rows.length) : Math.max(5, (e.props.scroll?.bodyRows ?? 40) - fixed)
     const isLit = (id: string) => bright.has(id) || dimmed.has(id)
-    const focus = followClaude && t.flashOn ? ([...t.flash].reverse().find(id => id !== BRANCH_ROW) ?? t.cursor) : t.cursor
+    const focus = settings.followClaude && t.flashOn ? ([...t.flash].reverse().find(id => id !== BRANCH_ROW) ?? t.cursor) : t.cursor
     const at = Math.max(0, rows.findIndex(r => r.node.id === focus))
-    const lit = followClaude && t.flashOn ? rows.findIndex(r => isLit(r.node.id)) : -1
+    const lit = settings.followClaude && t.flashOn ? rows.findIndex(r => isLit(r.node.id)) : -1
     const cap = Math.max(1, Math.floor(room / 3))
     let from = Math.max(0, Math.min(lit >= 0 && at - lit < room - 2 ? Math.max(0, lit - 1) : at - Math.floor(room / 2), rows.length - room))
-    let pinned = !nativeScroll && followClaude && t.flashOn ? rows.slice(0, from).filter(r => isLit(r.node.id)).slice(-cap) : []
+    let pinned = !rt.nativeScroll && settings.followClaude && t.flashOn ? rows.slice(0, from).filter(r => isLit(r.node.id)).slice(-cap) : []
     if (pinned.length) {
       const rest = Math.max(3, room - pinned.length)
       from = Math.max(0, Math.min(at - Math.floor(rest / 2), rows.length - rest))
@@ -1550,7 +1474,7 @@ export const register: Register = (on, options) => {
       from = Math.max(0, Math.min(t.scroll, max))
       pinned = []
     }
-    view = { from, max }
+    rt.view = { from, max }
     const shown = rows.slice(from, from + room - pinned.length)
     if (t.showSize) wantSizes($, [...pinned, ...shown].filter(r => r.node.kind === 'dir' && !(r.node.id in t.dirSizes)).map(r => r.node.id))
     const totals: [number, number] = t.top ? (t.diff[t.root] ?? [0, 0]) : [0, 0]
@@ -1622,10 +1546,10 @@ export const register: Register = (on, options) => {
       ...(pinned.length > 0 ? [note('  ⋮')] : []),
       ...shown.map(rowSpec),
     ]
-    if (nativeScroll) capRows(specs, Math.max(0, specs.findIndex(s => s.id === t.cursor)), note)
+    if (rt.nativeScroll) capRows(specs, Math.max(0, specs.findIndex(s => s.id === t.cursor)), note)
     const barSize = Math.max(1, Math.round((specs.length * shown.length) / Math.max(1, rows.length)))
     const bar =
-      !nativeScroll && rows.length > shown.length + pinned.length
+      !rt.nativeScroll && rows.length > shown.length + pinned.length
         ? { pos: max ? Math.round((from / max) * (specs.length - barSize)) : 0, size: barSize, thumb: theme.accent, track: theme.muted }
         : undefined
 
@@ -1670,7 +1594,7 @@ export const register: Register = (on, options) => {
       <Client
         key="rows"
         module="./rows.tsx"
-        props={{ rows: specs, active: t.cursor, ...rowColors, pointer, ...(bar ? { bar } : {}) } satisfies RowsProps}
+        props={{ rows: specs, active: t.cursor, ...rowColors, pointer: rt.pointer, ...(bar ? { bar } : {}) } satisfies RowsProps}
       />
     )
 
@@ -1712,7 +1636,7 @@ export const register: Register = (on, options) => {
           await reveal($, [path])
           await patch($, () => ({ selected: path, cursor: path }))
         })()
-      routePress = key => (key.startsWith('touch:') ? () => openTouch(key.slice(6)) : undefined)
+      rt.routePress = key => (key.startsWith('touch:') ? () => openTouch(key.slice(6)) : undefined)
       return desktopPane(
         $.ui.resolve(e),
         model,
