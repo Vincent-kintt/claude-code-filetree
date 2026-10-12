@@ -33,7 +33,6 @@ import {
   underAny,
   rowsOf,
   SEARCH_REVEAL_LIMIT,
-  visibleRows,
 } from './tree'
 import {
   ACTIVITY_TTL_MS,
@@ -43,7 +42,6 @@ import {
   DEL_COLOR,
   DOUBLE_MS,
   FLASH_MS,
-  FONT_SCRIPT,
   HOME_PRUNE,
   MIN_COLUMNS,
   NO_REPO_DEPTH,
@@ -57,9 +55,6 @@ import {
   SIZE_JOBS,
   SIZE_TIMEOUT_MS,
   SIZE_WALK_LIMIT,
-  THEME_FILE,
-  THEME_POLL_MS,
-  TOUCH_KEEP,
   TOUCH_SHOWN,
 } from './core/constants'
 import { broad, pruneArgs, rootOfDisk, shortPath } from './core/platform'
@@ -96,6 +91,10 @@ import {
   writes,
 } from './features/git-jobs/model'
 import { reading, searchNames, searchReads } from './features/reads/model'
+import { clearFlash, flashPatch, withTouches } from './features/activity/model'
+import { mentionsIn, selectedContext } from './features/context/model'
+import { keyAction, pressedNode, scrollToRow, wheelScroll, wheelStep } from './features/input/model'
+import { FONT_SCRIPT, fontStateOf, herdrPointerOk, homeOf, interruptActivities, interruptClaude, jumpPatch, layoutRefusal, paneTitle, revealPatch, settingsFrom, THEME_POLL_MS, themePath } from './features/session/model'
 
 // The host lists what a module reads and writes from these literals, so they stay in this file.
 const TREE = { plugin: 'filetree', key: 'tree' } as const
@@ -162,13 +161,7 @@ async function claudeLog($: EngineInterface): Promise<ClaudeLog> {
 /** Records what Claude did to `paths` for the desktop card and its touched list. */
 async function record($: EngineInterface, paths: string[], state: Touch['state'] | null, now?: Omit<Now, 'at'>): Promise<void> {
   const at = await $.clock.now()
-  const list = paths.map(posix)
-  await update($, CLAUDE, cur => {
-    const log = cur ?? { now: null, touched: [] }
-    const rest = log.touched.filter(x => !list.includes(x.path))
-    const touched = state ? [...list.map(path => ({ path, state, at })), ...rest] : rest
-    return { now: now ? { ...now, at } : log.now, touched: touched.slice(0, TOUCH_KEEP) }
-  })
+  await update($, CLAUDE, cur => withTouches(cur, paths, state, at, now))
 }
 
 function clean(segs: Seg[]): Seg[] {
@@ -301,7 +294,7 @@ async function reset($: EngineInterface, root: string, focus = false): Promise<v
   rt.sizeEpoch += 1
   rt.sizeQueue = []
   await put($, () => ({ ...emptyTree(root), showSize: settings.sizeDefault }))
-  const title = `Files: ${root.split('/').pop() || root}`
+  const title = paneTitle(root)
   rt.autoDock = !focus
   if (focus) await $.ui.open({ id: PANE, title, focus: true })
   else if (!rt.noDock) await $.ui.open({ id: PANE, title })
@@ -455,13 +448,6 @@ function openDirs(t: FileTree): string[] {
   return t.nodes.filter(n => n.kind === 'dir' && n.loaded && open.has(n.id)).map(n => n.id)
 }
 
-function keepTop(cur: FileTree, expanded: string[]): Partial<FileTree> {
-  if (settings.followClaude) return { scroll: null }
-  const top = visibleRows(cur)[cur.scroll ?? rt.view.from]?.node.id
-  const at = top ? visibleRows({ ...cur, expanded }).findIndex(r => r.node.id === top) : -1
-  return at < 0 ? {} : { scroll: at }
-}
-
 async function flash($: EngineInterface, tones: Record<string, string>): Promise<void> {
   const unique = Object.keys(tones)
   if (unique.length === 0) return
@@ -469,44 +455,12 @@ async function flash($: EngineInterface, tones: Record<string, string>): Promise
   const root = (await get($)).root
   rt.blink?.cancel()
   rt.blink = null
-  await patch($, cur => {
-    if (cur.root !== root) return {}
-    const open = new Set(cur.expanded)
-    const bright = new Set([...(cur.flashOn ? cur.flash.filter(id => !unique.includes(id)) : []), ...unique])
-    const dim = new Set<string>()
-    const all: Record<string, string> = cur.flashOn ? { ...cur.flashTones } : {}
-    if (cur.flashOn) {
-      for (const id of cur.flashDim) dim.add(id)
-    }
-    for (const id of unique) {
-      const tone = tones[id] ?? 'orange'
-      all[id] = tone
-      if (id === BRANCH_ROW) continue
-      const chain = ancestorsOf(id, cur.root)
-      if (!chain.some(a => !open.has(a))) continue
-      for (const a of chain) {
-        if (!open.has(a)) {
-          dim.add(a)
-          all[a] = all[a] ?? tone
-        }
-        open.add(a)
-      }
-    }
-    for (const id of bright) dim.delete(id)
-    return {
-      flash: [...bright],
-      flashDim: [...dim],
-      flashOn: true,
-      flashTones: all,
-      expanded: [...open],
-      ...keepTop(cur, [...open]),
-    }
-  })
+  await patch($, cur => (cur.root !== root ? {} : flashPatch(cur, tones, { followClaude: settings.followClaude, from: rt.view.from })))
   if (rt.generation !== mine) return
   rt.blink = $.clock.after(FLASH_MS, () => {
     if (rt.generation !== mine) return
     rt.blink = null
-    void patch($, cur => (rt.generation === mine ? { flash: [], flashDim: [], flashOn: false, flashTones: {} } : {}))
+    void patch($, () => (rt.generation === mine ? clearFlash() : {}))
   })
 }
 
@@ -734,11 +688,7 @@ async function touched($: EngineInterface, paths: string[], tone: string, show: 
 async function reveal($: EngineInterface, paths: string[]): Promise<void> {
   if (await followCwd($)) return
   await revealPaths($, paths)
-  await patch($, cur => {
-    const open = new Set(cur.expanded)
-    for (const p of paths) for (const a of ancestorsOf(p, cur.root)) open.add(a)
-    return { expanded: [...open], cursor: paths[paths.length - 1] ?? cur.cursor, scroll: null }
-  })
+  await patch($, cur => revealPatch(cur, paths))
 }
 
 async function walk($: EngineInterface, root: string, depth: number, limit: number): Promise<string[]> {
@@ -807,17 +757,12 @@ async function search($: EngineInterface, query: string): Promise<string[]> {
 
 async function jump($: EngineInterface, query: string): Promise<void> {
   const hits = (await search($, query)).slice(0, 10)
-  await patch($, cur => {
-    const open = new Set(cur.expanded)
-    for (const p of hits) for (const a of ancestorsOf(p, cur.root)) open.add(a)
-    return { query: '', expanded: [...open], cursor: hits[0] ?? cur.cursor, scroll: null }
-  })
+  await patch($, cur => jumpPatch(cur, hits))
 }
 
 async function fontState($: EngineInterface, charset: string): Promise<'ok' | 'stale' | 'missing'> {
   try {
-    const out = (await $.process.run(['sh', '-c', FONT_SCRIPT, 'sh', charset], { timeoutMs: 5_000 })).stdout.trim()
-    return out === 'stale' || out === 'missing' ? out : 'ok'
+    return fontStateOf((await $.process.run(['sh', '-c', FONT_SCRIPT, 'sh', charset], { timeoutMs: 5_000 })).stdout)
   } catch {
     return 'missing'
   }
@@ -826,9 +771,7 @@ async function fontState($: EngineInterface, charset: string): Promise<'ok' | 's
 async function finePointerOk($: EngineInterface): Promise<boolean> {
   if (!(await $.env.get('HERDR_ENV'))) return true
   try {
-    const out = (await $.process.run([(await $.env.get('HERDR_BIN_PATH')) || 'herdr', '--version'], { timeoutMs: 3_000 })).stdout
-    const [major = 0, minor = 0, fix = 0] = (/(\d+)\.(\d+)\.(\d+)/.exec(out) ?? []).slice(1).map(Number)
-    return major * 1e6 + minor * 1e3 + fix >= 9_001
+    return herdrPointerOk((await $.process.run([(await $.env.get('HERDR_BIN_PATH')) || 'herdr', '--version'], { timeoutMs: 3_000 })).stdout)
   } catch {
     return false
   }
@@ -1023,7 +966,7 @@ function cutLines(text: string, chrome: number): string {
 // A theme found starts the poll and a theme gone stops it, so a theme installed mid-session
 // is followed from the next resync, and a session without one polls nothing.
 async function loadTheme($: EngineInterface): Promise<void> {
-  const path = `${(await $.env.get('HOME')) ?? ''}/${THEME_FILE}`
+  const path = themePath(await $.env.get('HOME'))
   try {
     const stat = await $.fs.stat(path)
     if (stat.kind !== 'file') throw new Error('no theme file')
@@ -1066,18 +1009,12 @@ function cardOf(now: Now | null, git: Activity | undefined, where: (p: string) =
 }
 
 export const register: Register = (on, options) => {
-  settings.glyphs = typeof options?.glyphs === 'string' ? options.glyphs : 'auto'
-  const activity = typeof options?.activity === 'string' ? options.activity : 'reads and writes'
-  settings.showReads = activity.includes('reads')
-  settings.showWrites = activity.includes('writes')
-  settings.followClaude = options?.follow !== 'off'
-  settings.sizeDefault = options?.column === 'size'
-  settings.openWith = typeof options?.open === 'string' ? options.open : 'preview'
+  Object.assign(settings, settingsFrom(options))
   on('session.start', async ($, e, next) => {
     await $.command.register({ name: 'filetree', description: 'Show the file tree of the working directory' })
     const windows = (await $.env.get('OS')) === 'Windows_NT'
     useDrives(windows)
-    rt.home = posix(((await $.env.get('HOME')) || (await $.env.get('USERPROFILE')) || '').replace(/[\\/]+$/, ''))
+    rt.home = homeOf((await $.env.get('HOME')) || (await $.env.get('USERPROFILE')) || '')
     rt.activityId = Math.max(rt.activityId, ...(await activities($)).map(a => a.id))
     void (async () => {
       rt.pointer = await finePointerOk($)
@@ -1091,15 +1028,15 @@ export const register: Register = (on, options) => {
       rt.themePoll = null
       await loadTheme($)
       const t = await get($)
-      if (t.flashOn) await patch($, () => ({ flash: [], flashDim: [], flashOn: false, flashTones: {} }))
+      if (t.flashOn) await patch($, () => clearFlash())
       if (t.preview) await patch($, () => ({ preview: '', previewTop: 0 }))
-      await setActivities($, cur => cur.map(a => (a.state === 'running' ? { ...a, state: 'failed', label: `${a.kind} interrupted` } : a)))
-      await update($, CLAUDE, cur => (cur?.now?.state === 'running' ? { ...cur, now: { ...cur.now, state: 'failed' as const }, touched: cur.touched.filter(x => x.state !== 'reading' && x.state !== 'editing') } : (cur ?? { now: null, touched: [] })))
+      await setActivities($, interruptActivities)
+      await update($, CLAUDE, interruptClaude)
       const cwd = await cwdOf($)
       if (!t.root || t.nodes.length === 0 || t.root !== cwd) await reset($, cwd)
       else if (!rt.noDock) {
         rt.autoDock = true
-        await $.ui.open({ id: PANE, title: `Files: ${t.root.split('/').pop() || t.root}` })
+        await $.ui.open({ id: PANE, title: paneTitle(t.root) })
       }
     })()
     return next(e)
@@ -1109,8 +1046,8 @@ export const register: Register = (on, options) => {
     // The layout checks are the terminal's: the desktop app docks the pane itself and
     // reports no fullscreen layout, so a session no terminal draws skips them.
     const terminal = await $.session.surfaces().then(s => s.includes('terminal'), () => true)
-    if (terminal && !e.presentation.isFullscreen) return { text: 'filetree shows in the sidebar, which needs the fullscreen layout. Run /tui fullscreen, then /filetree.' }
-    if (terminal && e.presentation.columns < MIN_COLUMNS) return { text: 'filetree shows in the sidebar, which needs a terminal at least 110 columns wide. Widen it, then run /filetree.' }
+    const refusal = layoutRefusal(terminal, e.presentation.isFullscreen, e.presentation.columns)
+    if (refusal) return { text: refusal }
     rt.noDock = false
     const cwd = await cwdOf($)
     await reset($, cwd, true)
@@ -1198,12 +1135,12 @@ export const register: Register = (on, options) => {
       return {}
     }
     if (typeof data.scrollTo === 'number') {
-      const to = Math.round(Math.max(0, Math.min(1, data.scrollTo)) * rt.view.max)
+      const to = scrollToRow(data.scrollTo, rt.view.max)
       if (to !== t.scroll) await patch($, () => ({ scroll: to }))
       return {}
     }
     if (typeof data.press === 'string') {
-      const n = t.nodes.find(x => x.id === data.press) ?? rowsOf(t).find(r => r.node.id === data.press)?.node
+      const n = pressedNode(t, data.press)
       if (!n) return {}
       if (t.scroll === null) await patch($, () => ({ scroll: rt.view.from }))
       if (data.ctrl || data.shift) await openNode($, n)
@@ -1211,33 +1148,13 @@ export const register: Register = (on, options) => {
       return {}
     }
     if (typeof data.key !== 'string') return {}
-    if (t.preview) {
-      const page = Math.max(1, rt.previewRows - 2)
-      const by: Record<string, number> = { up: -1, k: -1, down: 1, j: 1, pageup: -page, pagedown: page, home: -Infinity, end: Infinity }
-      if (data.key === 'left' || data.key === 'h') await closePreview($)
-      else if (data.key in by) await scrollPreview($, by[data.key] ?? 0)
-      return {}
-    }
-    const rows = rowsOf(t)
-    const at = rows.findIndex(r => r.node.id === t.cursor)
-    const cur = rows[at]?.node
-    const move = (d: number) => {
-      const target = rows[Math.max(0, Math.min(rows.length - 1, (at < 0 ? 0 : at) + d))]
-      return target ? patch($, () => ({ cursor: target.node.id, scroll: null })) : Promise.resolve()
-    }
-    if (data.key === 'up' || data.key === 'k') await move(-1)
-    else if (data.key === 'down' || data.key === 'j') await move(1)
-    else if (data.key === 'pageup') await move(-10)
-    else if (data.key === 'pagedown') await move(10)
-    else if (data.key === 'home') await move(-rows.length)
-    else if (data.key === 'end') await move(rows.length)
-    else if (cur && (data.key === 'y' || data.key === 'Y')) await copyPath($, cur.id, data.key === 'Y' || Boolean(data.shift), e.surface)
-    else if (cur && (data.key === 'right' || data.key === 'l') && cur.kind === 'dir' && !t.expanded.includes(cur.id)) await toggle($, cur)
-    else if (cur && (data.key === 'left' || data.key === 'h')) {
-      if (cur.kind === 'dir' && t.expanded.includes(cur.id)) await toggle($, cur)
-      else if (cur.parent !== t.root) await patch($, () => ({ cursor: cur.parent }))
-    } else if (cur && data.key === 'return') await (cur.kind !== 'dir' ? openNode($, cur) : toggle($, cur))
-    else if (cur && data.key === ' ') await toggle($, cur)
+    const act = keyAction(data.key, Boolean(data.shift), t, rt.previewRows)
+    if (act.kind === 'patch') await patch($, () => act.patch)
+    else if (act.kind === 'toggle') await toggle($, act.node)
+    else if (act.kind === 'open') await openNode($, act.node)
+    else if (act.kind === 'copy') await copyPath($, act.id, act.absolute, e.surface)
+    else if (act.kind === 'closePreview') await closePreview($)
+    else if (act.kind === 'scrollPreview') await scrollPreview($, act.by)
     return {}
   })
 
@@ -1287,10 +1204,10 @@ export const register: Register = (on, options) => {
     if (rt.nativeScroll) return next(e)
     const t = await get($)
     if (t.preview) {
-      await scrollPreview($, Math.sign(e.by) * Math.max(3, Math.abs(e.by)))
+      await scrollPreview($, wheelStep(e.by))
       return {}
     }
-    const to = Math.max(0, Math.min(rt.view.max, (t.scroll ?? rt.view.from) + Math.sign(e.by) * Math.max(3, Math.abs(e.by))))
+    const to = wheelScroll(e.by, t.scroll, rt.view.from, rt.view.max)
     if (to !== t.scroll) await patch($, () => ({ scroll: to }))
     return {}
   })
@@ -1300,12 +1217,8 @@ export const register: Register = (on, options) => {
     if (!(await followCwd($))) void sync($)
     const t = await get($)
     const context = [...(e.context ?? [])]
-    if (t.selected && (await exists($, t.selected))) context.push(`The user has this file selected in the file tree; "this" or "it" in the prompt likely refers to it: ${t.selected}`)
-    const mentions = [...e.text.matchAll(/@([^\s"'`]+)/g)]
-      .map(m => (m[1] ?? '').replace(/[.,;:!?)]+$/, ''))
-      .filter(Boolean)
-      .map(p => resolve(t.root, p, rt.home))
-      .filter(p => inside(t.root, p))
+    if (t.selected && (await exists($, t.selected))) context.push(selectedContext(t.selected))
+    const mentions = mentionsIn(e.text, t.root, rt.home)
     if (mentions.length) {
       void (async () => {
         const found: string[] = []
