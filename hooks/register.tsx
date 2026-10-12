@@ -2,10 +2,14 @@ import { type EngineInterface, type Register, type ResultOf, update } from 'clau
 import { LINUX_LAUNCH, openCommand, openWithCommand } from './open'
 
 import type { Activity, ClaudeLog, FileNode, FileTree, Now, Theme, Touch } from '../types'
-import { type Card, type DesktopModel, desktopPane, desktopPreview } from './desktop'
-import { BRANCH_ICON, type GitAction, gitActions, readOnly, readTargets, resolve, TONES } from './git'
-import type { RowSpec, RowsProps, Seg } from './rows'
-import { CHEVRON_CLOSED, CHEVRON_OPEN, fileIcon, GIT_COLOR } from './icons'
+import { desktopPane, desktopPreview } from './desktop'
+import { desktopModel } from './features/desktop/model'
+import { desktopText, previewWindow, scrollTop, shapePreview } from './features/preview/model'
+import { terminalPreview } from './features/preview/view'
+import { latestActivity, rowColors, treeModel, treeView } from './features/tree/model'
+import { terminalPane } from './features/tree/view'
+import { type GitAction, gitActions, readOnly, readTargets, resolve } from './git'
+import type { RowsProps } from './rows'
 import { VERSION } from './version'
 import {
   ancestorsOf,
@@ -28,18 +32,12 @@ import {
   rollCounts,
   replaceChildren,
   rollUp,
-  stamp,
   toNodes,
-  underAny,
-  rowsOf,
   SEARCH_REVEAL_LIMIT,
 } from './tree'
 import {
   ACTIVITY_TTL_MS,
-  ADD_COLOR,
   BRANCH_ROW,
-  DATE_MIN_COLUMNS,
-  DEL_COLOR,
   DOUBLE_MS,
   FLASH_MS,
   HOME_PRUNE,
@@ -48,14 +46,9 @@ import {
   PANE,
   PRUNE,
   READ_REVEAL_LIMIT,
-  RENDER_CHARS,
-  RUNNING_MAX_MS,
-  SHIMMER,
-  SHIMMER_DESKTOP,
   SIZE_JOBS,
   SIZE_TIMEOUT_MS,
   SIZE_WALK_LIMIT,
-  TOUCH_SHOWN,
 } from './core/constants'
 import { broad, pruneArgs, rootOfDisk, shortPath } from './core/platform'
 import { rt, settings } from './core/runtime'
@@ -162,17 +155,6 @@ async function claudeLog($: EngineInterface): Promise<ClaudeLog> {
 async function record($: EngineInterface, paths: string[], state: Touch['state'] | null, now?: Omit<Now, 'at'>): Promise<void> {
   const at = await $.clock.now()
   await update($, CLAUDE, cur => withTouches(cur, paths, state, at, now))
-}
-
-function clean(segs: Seg[]): Seg[] {
-  for (const seg of segs) for (const k of Object.keys(seg) as (keyof Seg)[]) if (seg[k] === undefined) delete seg[k]
-  return segs
-}
-
-function faint(hex: string): string {
-  const v = parseInt(hex.slice(1), 16)
-  const ch = (shift: number) => Math.round(0x26 + (((v >> shift) & 255) - 0x26) * 0.3)
-  return `#${[16, 8, 0].map(x => ch(x).toString(16).padStart(2, '0')).join('')}`
 }
 
 async function list($: EngineInterface, dir: string): Promise<FileNode[] | null> {
@@ -777,18 +759,6 @@ async function finePointerOk($: EngineInterface): Promise<boolean> {
   }
 }
 
-const PREVIEW_CHARS = 90_000
-const PREVIEW_LINE = 2_000
-
-function fitSerialized(lines: string[], max: number): string[] {
-  let size = 0
-  for (let i = 0; i < lines.length; i++) {
-    size += JSON.stringify(lines[i]).length
-    if (size > max) return lines.slice(0, i)
-  }
-  return lines
-}
-
 async function loadPreview($: EngineInterface, path: string): Promise<void> {
   let text = ''
   let note = ''
@@ -805,13 +775,7 @@ async function loadPreview($: EngineInterface, path: string): Promise<void> {
   } catch (err) {
     note = `could not read: ${String((err as Error)?.message ?? err).split('\n')[0]}`
   }
-  const total = text.length
-  let lines = text.slice(0, PREVIEW_CHARS).replace(/\r\n?/g, '\n').replace(/[\u0000-\u0008\u000b-\u001f\u007f]/g, '').split('\n')
-  if (total > PREVIEW_CHARS && lines.length > 1) lines.pop()
-  lines = lines.map(l => (l.length > PREVIEW_LINE ? `${l.slice(0, PREVIEW_LINE)}…` : l))
-  const fit = fitSerialized(lines, PREVIEW_CHARS)
-  if (total > PREVIEW_CHARS || fit.length < lines.length) note = `first ${fit.length.toLocaleString('en')} lines of ${total.toLocaleString('en')} characters`
-  rt.previewed = { path, text: fit.join('\n'), note }
+  rt.previewed = { path, ...shapePreview(text, note) }
 }
 
 async function showPreview($: EngineInterface, path: string): Promise<void> {
@@ -825,31 +789,8 @@ async function closePreview($: EngineInterface): Promise<void> {
 
 async function scrollPreview($: EngineInterface, by: number): Promise<void> {
   const t = await get($)
-  const last = Math.max(0, (rt.previewed?.text.split('\n').length ?? 1) - rt.previewRows)
-  const top = Math.max(0, Math.min(last, t.previewTop + by))
+  const top = scrollTop(rt.previewed?.text, rt.previewRows, t.previewTop, by)
   if (top !== t.previewTop) await patch($, () => ({ previewTop: top }))
-}
-
-function previewLines(text: string, top: number, rows: number, markdown: boolean): { text: string; top: number } {
-  const lines = text.split('\n')
-  const from = Math.max(0, Math.min(top, lines.length - 1))
-  let shown = lines.slice(from, from + rows)
-  if (markdown) {
-    // Reopen a code fence the window starts inside, so the rest is not read as prose.
-    let fence = ''
-    let opener = ''
-    for (const line of lines.slice(0, from)) {
-      const m = /^ {0,3}(`{3,}|~{3,})(.*)$/.exec(line)
-      if (!m) continue
-      const mark = m[1] ?? ''
-      if (!fence) {
-        fence = mark
-        opener = line.trimStart()
-      } else if (mark[0] === fence[0] && mark.length >= fence.length && !(m[2] ?? '').trim()) fence = ''
-    }
-    if (fence) shown = [opener, ...shown]
-  }
-  return { text: shown.join('\n'), top: from }
 }
 
 async function openFile($: EngineInterface, path: string, external = false): Promise<void> {
@@ -907,62 +848,6 @@ async function searched($: EngineInterface, e: { tool: string }, next: (e: { too
   return result
 }
 
-// What rows.tsx draws for a row, serialized: a row box, a Text per segment, and a Text per
-// character while a segment shimmers. Measured at about 160 + 70 a segment + its text,
-// with the text counted as JSON escapes it.
-function drawnSize(r: RowSpec): number {
-  let n = 160
-  for (const s of [...r.left, ...r.right]) n += s.sh && !s.one ? [...s.t].reduce((a, ch) => a + 78 + JSON.stringify(ch).length, 40) : 68 + JSON.stringify(s.t).length
-  return n
-}
-
-// The desktop draws every row, so a big open tree is cut to RENDER_CHARS drawn: the rows
-// centred on the cursor, with a note above and below saying how many were left out.
-function capRows(specs: RowSpec[], at: number, note: (text: string) => RowSpec): void {
-  const size = specs.map(drawnSize)
-  if (size.reduce((a, b) => a + b, 0) <= RENDER_CHARS) return
-  // Room for the two notes, the list box around the rows and the cursor row's highlight.
-  const budget = RENDER_CHARS - 2 * drawnSize(note(`  ⋮ ${specs.length.toLocaleString('en')} more rows; search to find the rest`)) - 400
-  let from = Math.min(Math.max(0, at), specs.length - 1)
-  let to = from + 1
-  let used = size[from]!
-  for (let grew = true; grew; ) {
-    grew = false
-    if (to < specs.length && used + size[to]! <= budget) {
-      used += size[to++]!
-      grew = true
-    }
-    if (from > 0 && used + size[from - 1]! <= budget) {
-      used += size[--from]!
-      grew = true
-    }
-  }
-  const kept = specs.slice(from, to)
-  const above = from
-  const below = specs.length - to
-  specs.length = 0
-  if (above) specs.push(note(`  ⋮ ${above.toLocaleString('en')} rows above`))
-  specs.push(...kept)
-  if (below) specs.push(note(`  ⋮ ${below.toLocaleString('en')} more rows; search to find the rest`))
-}
-
-// The longest run of whole lines whose JSON form, with the rt.view's buttons, name, note and
-// path around it, stays within RENDER_CHARS. loadPreview already cuts each line to 2,000
-// characters, so the first line always fits.
-function cutLines(text: string, chrome: number): string {
-  const room = RENDER_CHARS - chrome
-  if (JSON.stringify(text).length <= room) return text
-  let used = 2
-  let end = 0
-  for (const line of text.split('\n')) {
-    const cost = JSON.stringify(line).length
-    if (used + cost > room) break
-    used += cost
-    end += line.length + 1
-  }
-  return text.slice(0, end)
-}
-
 // A theme found starts the poll and a theme gone stops it, so a theme installed mid-session
 // is followed from the next resync, and a session without one polls nothing.
 async function loadTheme($: EngineInterface): Promise<void> {
@@ -981,31 +866,6 @@ async function loadTheme($: EngineInterface): Promise<void> {
     await $.state.set(THEME, DEFAULT_THEME)
     rt.themeMtime = 0
   }
-}
-
-/** The desktop card: what Claude is doing, else the last thing it did, a git action or a file. */
-function cardOf(now: Now | null, git: Activity | undefined, where: (p: string) => string): Card {
-  const gitRunning = git?.state === 'running'
-  const nowRunning = now?.state === 'running'
-  if (git && (!now || (gitRunning !== nowRunning ? gitRunning : git.at >= now.at))) {
-    const phase = git.state === 'running' ? 'RIGHT NOW' : git.state === 'failed' ? 'FAILED' : 'DONE'
-    const title = git.state === 'running' ? `Claude is ${git.label}` : git.state === 'failed' ? `Claude's ${git.label}` : `Claude ${git.label}`
-    const icon = git.state === 'failed' ? 'x' : git.state === 'done' && git.kind === 'git commit' ? 'check' : 'git'
-    return { tone: git.state === 'failed' ? 'red' : git.tone, phase, title, sub: git.detail, icon, live: git.state === 'running' }
-  }
-  if (!now) return { tone: '', phase: 'IDLE', title: 'Waiting for Claude', sub: 'What Claude reads, edits and commits shows here', icon: 'idle', live: false }
-  const name = now.path.split('/').pop() || now.path
-  const what = now.count > 1 ? `${now.count} files` : name
-  const sub = now.verb === 'commit' ? now.detail : now.count > 1 ? `${where(now.path)} and more` : where(now.path)
-  if (now.state === 'failed') {
-    const title = now.verb === 'read' ? `Claude couldn't read ${name}` : now.verb === 'edit' ? `Claude's edit to ${name} failed` : 'Claude’s commit failed'
-    return { tone: 'red', phase: 'FAILED', title, sub, icon: 'x', live: false }
-  }
-  const running = now.state === 'running'
-  const phase = running ? 'RIGHT NOW' : 'DONE'
-  if (now.verb === 'read') return { tone: 'purple', phase, title: running ? `Claude is reading ${name}` : `Claude read ${what}`, sub, icon: 'eye', live: running }
-  if (now.verb === 'edit') return { tone: 'orange', phase, title: running ? `Claude is editing ${name}` : `Claude edited ${what}`, sub, icon: 'pencil', live: running }
-  return { tone: 'green', phase, title: `Claude committed ${now.count} ${now.count === 1 ? 'file' : 'files'}`, sub, icon: 'check', live: false }
 }
 
 export const register: Register = (on, options) => {
@@ -1260,239 +1120,52 @@ export const register: Register = (on, options) => {
       return <Empty />
     }
     const unicode = settings.glyphs === 'plain' || (settings.glyphs === 'auto' && (rt.noNerd || e.surface === 'desktop'))
-    const { Box, Text, Button, Input, Client } = $.ui.resolve(e)
+    const { Client } = $.ui.resolve(e)
     const t = await get($)
     const theme: Theme = (await $.state.get(THEME)).value ?? DEFAULT_THEME
     // The desktop tab never hands the wheel or the scrollbar drag to the pane, so
     // there it draws every row and lets the engine scroll the body.
     rt.nativeScroll = e.surface === 'desktop'
-    // A translucent accent reads on both of the desktop app's themes; the terminal keeps the theme's selection.
-    const rowColors = rt.nativeScroll
-      ? { activeBg: `${theme.accent}38`, hoverBg: '#8080801f', tones: SHIMMER_DESKTOP }
-      : { activeBg: theme.selection, hoverBg: faint(theme.selection), tones: SHIMMER }
+    const colors = rowColors(theme, rt.nativeScroll)
+    const bodyRows = e.props.scroll?.bodyRows
     if (t.preview) {
       if (rt.previewed?.path !== t.preview) await loadPreview($, t.preview)
       const p = rt.previewed
-      const markdown = /\.(md|markdown|mdx)$/i.test(t.preview)
-      const all = (p?.text ?? '').split('\n').length
-      rt.previewRows = rt.nativeScroll ? all : Math.max(4, (e.props.scroll?.bodyRows ?? 40) - (p?.note ? 2 : 1))
-      const win = previewLines(p?.text ?? '', rt.nativeScroll ? 0 : Math.min(t.previewTop, Math.max(0, all - rt.previewRows)), rt.previewRows, markdown)
-      const name = t.preview !== t.root && inside(t.root, t.preview) ? relative(t.root, t.preview) : shortPath(t.preview)
+      const path = t.preview
+      const w = previewWindow(path, t.root, p?.text ?? '', p?.note ?? '', t.previewTop, bodyRows, rt.nativeScroll)
+      rt.previewRows = w.rows
+      const actions = { back: () => void closePreview($), external: () => void openFile($, path, true) }
       if (e.surface === 'desktop') {
         // The desktop page refuses a Code or Markdown drawn inside a Client, so the preview is
         // the pane's own tree there; the app scrolls it natively.
-        const whole = p?.text ?? ''
-        const cut = cutLines(whole, 1_500 + 2 * JSON.stringify(t.preview).length + JSON.stringify(p?.note ?? '').length)
-        const shownLines = cut.split('\n').length - (cut.endsWith('\n') ? 1 : 0)
-        const note = [p?.note ?? '', cut.length < whole.length ? `first ${shownLines.toLocaleString('en')} of ${whole.split('\n').length.toLocaleString('en')} lines; Open in app shows the rest` : ''].filter(Boolean).join(' · ')
-        const path = t.preview
-        const actions = { back: () => void closePreview($), external: () => void openFile($, path, true) }
+        const cut = desktopText(path, p?.text ?? '', p?.note ?? '')
         rt.routePress = key => (key === 'back' ? actions.back : key === 'external' ? actions.external : undefined)
-        return desktopPreview($.ui.resolve(e), { name, note, markdown, text: cut, path }, actions, theme.muted)
+        return desktopPreview($.ui.resolve(e), { name: w.name, note: cut.note, markdown: w.markdown, text: cut.text, path }, actions, theme.muted)
       }
-      return (
-        <Box flexDirection="column" minHeight={Math.max(1, e.props.scroll?.bodyRows ?? 1)} backgroundColor={theme.bg || undefined}>
-          <Box flexDirection="row">
-            <Button key="back" plain label={unicode ? '← files' : '\u{f004d} files'} onPress={() => void closePreview($)} />
-            <Text> </Text>
-            <Box flexShrink={1} flexGrow={1}>
-              <Text bold wrap="truncate-start">{name}</Text>
-            </Box>
-            <Button key="external" plain dimColor label="Open in app ↗" onPress={() => void openFile($, t.preview, true)} />
-          </Box>
-          {p?.note ? <Text dimColor>{p.note}</Text> : null}
-          <Client
-            key="rows"
-            module="./rows.tsx"
-            props={{ rows: [], active: '', ...rowColors, pointer: false, preview: { text: win.text, path: t.preview, startLine: win.top + 1, markdown } } satisfies RowsProps}
-          />
-        </Box>
+      const lines = (
+        <Client
+          key="rows"
+          module="./rows.tsx"
+          props={{ rows: [], active: '', ...colors, pointer: false, preview: { text: w.win.text, path, startLine: w.win.top + 1, markdown: w.markdown } } satisfies RowsProps}
+        />
       )
+      return terminalPreview($.ui.resolve(e), { name: w.name, note: p?.note ?? '', unicode, minHeight: Math.max(1, bodyRows ?? 1), bg: theme.bg }, actions, lines)
     }
     const now = await $.clock.now()
-    const live = (await activities($)).filter(a => now - a.at < (a.state === 'running' ? RUNNING_MAX_MS : ACTIVITY_TTL_MS))
-    const latest = [...live].reverse().find(a => a.state === 'running') ?? live[live.length - 1]
-    const bright = new Set(t.flashOn ? t.flash : [])
-    const dimmed = new Set(t.flashOn ? t.flashDim : [])
-    const ignored = new Set(t.ignored)
-    const untracked = new Set(t.untrackedDirs)
-    const width = Math.max(24, e.props.bodyColumns)
-    const rows = rowsOf(t)
-    const fixed = 2 + (t.top ? (t.branch ? 1 : 0) : 1) + (t.selected || latest ? 1 : 0)
-    const room = rt.nativeScroll ? Math.max(1, rows.length) : Math.max(5, (e.props.scroll?.bodyRows ?? 40) - fixed)
-    const isLit = (id: string) => bright.has(id) || dimmed.has(id)
-    const focus = settings.followClaude && t.flashOn ? ([...t.flash].reverse().find(id => id !== BRANCH_ROW) ?? t.cursor) : t.cursor
-    const at = Math.max(0, rows.findIndex(r => r.node.id === focus))
-    const lit = settings.followClaude && t.flashOn ? rows.findIndex(r => isLit(r.node.id)) : -1
-    const cap = Math.max(1, Math.floor(room / 3))
-    let from = Math.max(0, Math.min(lit >= 0 && at - lit < room - 2 ? Math.max(0, lit - 1) : at - Math.floor(room / 2), rows.length - room))
-    let pinned = !rt.nativeScroll && settings.followClaude && t.flashOn ? rows.slice(0, from).filter(r => isLit(r.node.id)).slice(-cap) : []
-    if (pinned.length) {
-      const rest = Math.max(3, room - pinned.length)
-      from = Math.max(0, Math.min(at - Math.floor(rest / 2), rows.length - rest))
-      pinned = rows.slice(0, from).filter(r => isLit(r.node.id)).slice(-cap)
-    }
-    const max = Math.max(0, rows.length - room)
-    if (t.scroll !== null) {
-      from = Math.max(0, Math.min(t.scroll, max))
-      pinned = []
-    }
-    rt.view = { from, max }
-    const shown = rows.slice(from, from + room - pinned.length)
-    if (t.showSize) wantSizes($, [...pinned, ...shown].filter(r => r.node.kind === 'dir' && !(r.node.id in t.dirSizes)).map(r => r.node.id))
-    const totals: [number, number] = t.top ? (t.diff[t.root] ?? [0, 0]) : [0, 0]
-    const countSegs = (c: [number, number, number] | undefined): Seg[] => {
-      if (!c) return []
-      const out: Seg[] = []
-      if (c[0] > 0) out.push({ t: ` ?:${c[0]}`, c: GIT_COLOR['?'] ?? ADD_COLOR })
-      if (c[1] > 0) out.push({ t: ` M:${c[1]}`, c: GIT_COLOR.M ?? '#e5c07b' })
-      if (c[2] > 0) out.push({ t: ` D:${c[2]}`, c: theme.urgent })
-      return out
-    }
-    const rootCounts = t.top ? countSegs(t.counts[t.root]) : []
-    const header = t.top ? [t.top.split('/').pop() ?? t.top, t.prefix.replace(/\/$/, '')].filter(Boolean).join('/') : t.root.split('/').pop() || t.root
-
-    const rowSpec = (r: (typeof rows)[number]): RowSpec => {
-      const n = r.node
-      const own = t.git[n.id]
-      const status = own ?? (underAny(dirname(n.id), untracked, t.root) ? '?' : undefined)
-      const isIgnored = !status && underAny(n.id, ignored, t.root)
-      const gitColor = status === 'D' || status === 'U' ? theme.urgent : status ? (GIT_COLOR[status] ?? theme.muted) : undefined
-      const isBright = bright.has(n.id)
-      const isDim = !isBright && dimmed.has(n.id)
-      const tone = t.flashTones[n.id] ?? 'orange'
-      const iconColor = isIgnored ? theme.muted : (gitColor ?? (n.hidden ? theme.muted : n.kind === 'dir' ? theme.accent : theme.muted))
-      const nameColor = isIgnored ? theme.muted : (gitColor ?? (n.hidden ? theme.muted : theme.fg || undefined))
-      const loc = t.diff[n.id]
-      const meta = t.showSize
-        ? n.kind === 'dir'
-          ? n.id in t.dirSizes
-            ? formatSize(t.dirSizes[n.id] ?? -1)
-            : '…'
-          : n.kind === 'file' || (n.kind === 'link' && n.size > 0)
-            ? formatSize(n.size)
-            : ''
-        : loc || width < DATE_MIN_COLUMNS
-          ? ''
-          : (n.kind === 'file' || (n.kind === 'link' && n.size > 0)) && n.mtime > 0
-            ? stamp(n.mtime)
-            : ''
-      const locText = loc ? `${loc[0] ? ` +${loc[0]}` : ''}${loc[1] ? ` -${loc[1]}` : ''}` : ''
-      const dirCounts = n.kind === 'dir' ? countSegs(t.counts[n.id]) : []
-      const badge = dirCounts.length ? '' : status ? ` ${status}` : isIgnored ? (unicode ? ' ⊘' : ' \u{f05e}') : '  '
-      const countsText = dirCounts.map(c => c.t).join('')
-      const cols = Math.max(4, width - r.depth * 2 - 6 - (meta ? meta.length + 1 : 0) - locText.length - badge.length - countsText.length)
-      const name = n.name.length > cols ? n.name.slice(0, cols - 1) + '…' : n.name
-      const caret = n.kind === 'dir' ? (unicode ? (r.open ? '▾' : '▸') : r.open ? CHEVRON_OPEN : CHEVRON_CLOSED) + ' ' : '  '
-      const isRepo = n.kind === 'dir' && n.id === t.top
-      const glyph = unicode ? (n.kind === 'dir' ? '■' : '·') : fileIcon(n, r.open, isRepo)
-      const lit = isBright || isDim
-      const left: Seg[] = [
-        { t: '  '.repeat(r.depth) },
-        { t: caret, c: theme.muted },
-        lit ? { t: glyph + ' ', sh: tone, dim: isDim, one: true } : { t: glyph + ' ', c: iconColor },
-        lit ? { t: name, sh: tone, dim: isDim, b: isBright } : { t: name, c: nameColor, b: n.id === t.selected, s: status === 'D' && n.kind !== 'dir' },
-      ]
-      const right: Seg[] = []
-      if (meta) right.push({ t: ` ${meta}`, c: theme.muted })
-      if (loc && loc[0] > 0) right.push({ t: ` +${loc[0]}`, c: ADD_COLOR })
-      if (loc && loc[1] > 0) right.push({ t: ` -${loc[1]}`, c: DEL_COLOR })
-      right.push(...dirCounts)
-      if (badge) right.push({ t: badge, c: status ? gitColor : theme.muted, b: true })
-      return { id: n.id, left: clean(left), right: clean(right) }
-    }
-
-    const note = (text: string): RowSpec => ({ id: '', left: [{ t: text, c: theme.muted }], right: [] })
-    const specs: RowSpec[] = [
-      ...(rows.length === 0 ? [note('empty')] : []),
-      ...pinned.map(rowSpec),
-      ...(pinned.length > 0 ? [note('  ⋮')] : []),
-      ...shown.map(rowSpec),
-    ]
-    if (rt.nativeScroll) capRows(specs, Math.max(0, specs.findIndex(s => s.id === t.cursor)), note)
-    const barSize = Math.max(1, Math.round((specs.length * shown.length) / Math.max(1, rows.length)))
-    const bar =
-      !rt.nativeScroll && rows.length > shown.length + pinned.length
-        ? { pos: max ? Math.round((from / max) * (specs.length - barSize)) : 0, size: barSize, thumb: theme.accent, track: theme.muted }
-        : undefined
-
-    const branchRow = () => {
-      if (!t.top || !t.branch) return null
-      const b = t.branch
-      const isFlash = bright.has(BRANCH_ROW)
-      const tone = t.flashTones[BRANCH_ROW] ?? 'teal'
-      const label = b.head
-      return (
-        <Box flexDirection="row" height={1} overflow="hidden">
-          <Box flexDirection="row" flexShrink={0}>
-            <Text color={isFlash ? (TONES[tone]?.solid ?? theme.accent) : theme.accent}>{(unicode ? BRANCH_ICON.plain : BRANCH_ICON.nerd) + ' '}</Text>
-            <Text bold color={isFlash ? (TONES[tone]?.solid ?? (theme.fg || undefined)) : theme.fg || undefined}>
-              {label}
-            </Text>
-            {b.ahead > 0 && <Text color={TONES.teal?.solid}>{` ↑${b.ahead}`}</Text>}
-            {b.behind > 0 && <Text color={TONES.blue?.solid}>{` ↓${b.behind}`}</Text>}
-          </Box>
-          {b.upstream && (
-            <Box flexShrink={1} overflow="hidden">
-              <Text color={theme.muted} wrap="truncate-end">
-                {` ${b.upstream}`}
-              </Text>
-            </Box>
-          )}
-          <Box flexGrow={1} />
-          <Box flexDirection="row" flexShrink={0}>
-            {totals[0] > 0 && <Text color={ADD_COLOR}>{` +${totals[0]}`}</Text>}
-            {totals[1] > 0 && <Text color={DEL_COLOR}>{` -${totals[1]}`}</Text>}
-            {rootCounts.map(c => (
-              <Text color={c.c}>{c.t}</Text>
-            ))}
-            {rootCounts.length === 0 && totals[0] === 0 && totals[1] === 0 && <Text color={theme.muted}> clean</Text>}
-          </Box>
-        </Box>
-      )
-    }
-
-    const rel = (p: string) => (p !== t.root && inside(t.root, p) ? p.slice(t.root.endsWith('/') ? t.root.length : t.root.length + 1) : shortPath(p))
+    const latest = latestActivity(await activities($), now)
+    const view = treeView({ t, theme, unicode, width: Math.max(24, e.props.bodyColumns), bodyRows, nativeScroll: rt.nativeScroll, followClaude: settings.followClaude, latest })
+    rt.view = { from: view.from, max: view.max }
+    if (view.sizes) wantSizes($, view.sizes)
     const tree = (
       <Client
         key="rows"
         module="./rows.tsx"
-        props={{ rows: specs, active: t.cursor, ...rowColors, pointer: rt.pointer, ...(bar ? { bar } : {}) } satisfies RowsProps}
+        props={{ rows: view.specs, active: t.cursor, ...colors, pointer: rt.pointer, ...(view.bar ? { bar: view.bar } : {}) } satisfies RowsProps}
       />
     )
 
     if (e.surface === 'desktop') {
-      const log = await claudeLog($)
-      const where = (p: string) => {
-        const d = dirname(p)
-        return d === t.root || !inside(t.root, d) ? (d === t.root ? 'in project root' : `in ${shortPath(d)}`) : `in ${rel(d)}`
-      }
-      const card = cardOf(log.now, latest ?? log.git, where)
-      const c = t.counts[t.root] ?? [0, 0, 0]
-      const changed = c[0] + c[1] + c[2]
-      const summary = !t.top
-        ? { text: '', add: 0, del: 0 }
-        : changed === 0 && totals[0] === 0 && totals[1] === 0
-          ? { text: 'clean, nothing changed', add: 0, del: 0 }
-          : { text: changed ? `${changed} changed` : 'changed', add: totals[0], del: totals[1] }
-      const mine = log.touched.filter(x => inside(t.root, x.path) && x.path !== t.root)
-      const model: DesktopModel = {
-        card,
-        branch: t.top && t.branch ? { head: t.branch.head, upstream: t.branch.upstream, ahead: t.branch.ahead, behind: t.branch.behind } : null,
-        summary,
-        noRepo: !t.top,
-        query: t.query,
-        view: t.view,
-        edited: Object.keys(t.changes).filter(p => p !== t.root && inside(t.root, p)).length,
-        selected: t.selected ? rel(t.selected) : '',
-        touched: mine.slice(0, TOUCH_SHOWN).map(x => {
-          const d = dirname(x.path)
-          return { path: x.path, name: x.path.split('/').pop() ?? x.path, dir: d === t.root ? '' : rel(d), state: x.state, folder: t.nodes.some(n => n.id === x.path && n.kind === 'dir') }
-        }),
-        more: Math.max(0, mine.length - TOUCH_SHOWN),
-        project: header,
-        muted: theme.muted,
-      }
+      const model = desktopModel(t, await claudeLog($), latest, view.totals, view.header, theme.muted)
       const openTouch = (path: string) =>
         void (async () => {
           if (!(await exists($, path))) return
@@ -1513,62 +1186,7 @@ export const register: Register = (on, options) => {
       )
     }
 
-    const chip = (a: Activity) => {
-      const tone = a.state === 'failed' ? 'red' : a.tone
-      const color = TONES[tone]?.solid ?? theme.accent
-      const icon = unicode ? a.plain : a.nerd
-      const hash = a.state === 'done' && a.kind === 'git commit' ? a.detail.split(' ')[0] ?? '' : ''
-      return (
-        <Box flexDirection="row" marginLeft={2}>
-          <Text color={color}>{icon + ' '}</Text>
-          <Text bold={a.state === 'running'} color={color}>
-            {a.state === 'running' ? `${a.label}…` : a.label}
-          </Text>
-          {hash && <Text color={theme.muted}>{` ${hash}`}</Text>}
-        </Box>
-      )
-    }
-
-    return (
-      <Box flexDirection="column" minHeight={Math.max(1, e.props.scroll?.bodyRows ?? 1)} backgroundColor={theme.bg || undefined}>
-        <Box flexDirection="row">
-          <Text bold color={theme.accent} wrap="truncate-start">
-            {header}
-          </Text>
-        </Box>
-        {branchRow()}
-        {!t.top && <Text color={theme.muted}>{unicode ? '± ' : '\u{e702} '}no git repo · git status starts after git init</Text>}
-        <Box flexDirection="row">
-          <Box flexGrow={1}>
-            <Input
-              key="q"
-              label="/ "
-              placeholder="search"
-              submitLabel="jump"
-              autoFocus
-              value={t.query}
-              onInput={(v: string) => void search($, v)}
-              onSubmit={(v: string) => void jump($, v)}
-            />
-          </Box>
-          {t.query ? <Button key="clear" plain dimColor label={unicode ? '×' : '\u{f0156}'} onPress={() => void search($, '')} /> : null}
-        </Box>
-        {tree}
-        <Box flexGrow={1} />
-        {(t.selected || latest) && (
-          <Box flexDirection="row">
-            {t.selected ? (
-              <Box flexShrink={1}>
-                <Text dimColor wrap="truncate-start">
-                  selected: {t.selected !== t.root && inside(t.root, t.selected) ? t.selected.slice(t.root.endsWith('/') ? t.root.length : t.root.length + 1) : shortPath(t.selected)}
-                </Text>
-              </Box>
-            ) : null}
-            <Box flexGrow={1} />
-            {latest && chip(latest)}
-          </Box>
-        )}
-      </Box>
-    )
+    const model = treeModel(t, view, theme, unicode, latest, bodyRows)
+    return terminalPane($.ui.resolve(e), model, { search: v => void search($, v), jump: v => void jump($, v), clear: () => void search($, '') }, tree)
   })
 }
