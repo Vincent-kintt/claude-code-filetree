@@ -1,4 +1,4 @@
-import { type BuiltinToolResults, type EngineInterface, type Register, type Timer, update } from 'claude-code'
+import { type BuiltinToolResults, type EngineInterface, type Register, type ResultOf, type Timer, update } from 'claude-code'
 import { LINUX_LAUNCH, openCommand, openWithCommand } from './open'
 
 import type { Activity, ClaudeLog, FileNode, FileTree, Now, Theme, Touch } from '../types'
@@ -11,6 +11,7 @@ import {
   type Change,
   DEFAULT_THEME,
   dirname,
+  drivesOn,
   emptyTree,
   formatSize,
   inside,
@@ -43,6 +44,7 @@ const RENDER_CHARS = 60_000
 const TOUCH_KEEP = 40
 const TOUCH_SHOWN = 8
 const PANE = 'filetree'
+const MIN_COLUMNS = 110
 const SHIMMER = Object.fromEntries(Object.entries(TONES).map(([k, v]) => [k, { bright: v.bright, dim: v.dim }]))
 // The desktop app may be light or dark and says neither, so its shimmer peaks on a deep
 // shade rather than the near-white the terminal's dark background takes.
@@ -78,6 +80,8 @@ const SIZE_WALK_LIMIT = 50_000
 let blink: Timer | null = null
 let themePoll: Timer | null = null
 let themeMtime: number | null = null
+let gitWatched: string[] = []
+let gitSettle: Timer | null = null
 let generation = 0
 let lastPress = { key: '', at: 0 }
 let noNerd = false
@@ -103,6 +107,8 @@ let nativeScroll = false
 let routePress: (key: string) => (() => void) | undefined = () => undefined
 let lastSync = 0
 let noDock = false
+// Set by an open nobody asked for, so the first terminal drawing checks the layout /filetree checks.
+let autoDock = false
 let home = ''
 let platform: Promise<'linux' | 'darwin' | 'win32'> | null = null
 let dirty: { root: string; files: Record<string, Change> } = { root: '', files: {} }
@@ -304,6 +310,7 @@ async function reset($: EngineInterface, root: string, focus = false): Promise<v
   sizeQueue = []
   await put($, () => ({ ...emptyTree(root), showSize: sizeDefault }))
   const title = `Files: ${root.split('/').pop() || root}`
+  autoDock = !focus
   if (focus) await $.ui.open({ id: PANE, title, focus: true })
   else if (!noDock) await $.ui.open({ id: PANE, title })
   await loadDirs($, [root])
@@ -536,7 +543,7 @@ async function followCwd($: EngineInterface): Promise<boolean> {
 
 type Pending = { actions: GitAction[]; ids: number[]; command: string; head: string }
 type Job = { actions: GitAction[]; since: Since; initRepo: boolean; readOnly: boolean }
-type Background = { p: Pending | null; job: Job; reads: string[] }
+type Background = { p: Pending | null; job: Job; reads: string[]; cwd: string }
 type GitOperation = NonNullable<BuiltinToolResults['Bash']['gitOperation']>
 type Outcome = { state: 'done' | 'failed'; label: string; detail: string }
 
@@ -608,8 +615,12 @@ function failAll(p: Pending): Outcome[] {
   return p.actions.map(a => ({ state: 'failed', label: `${a.verb} failed`, detail: '' }))
 }
 
-function proven(p: Pending | null, results: Outcome[]): GitAction[] {
-  return p ? p.actions.filter((_, i) => results[i]?.state !== 'failed') : []
+// Only actions with evidence they succeeded: a neutral "ran git X" is not proof.
+function proven(p: Pending | null, results: Outcome[], cwd: string): GitAction[] {
+  if (!p) return []
+  return p.actions
+    .filter((a, i) => results[i]?.state === 'done' && results[i]?.label === a.done)
+    .map(a => (a.paths ? { ...a, paths: a.paths.map(x => resolve(cwd, x, home)) } : a))
 }
 
 function taskEnds(text: string): [string, string][] {
@@ -630,7 +641,7 @@ async function settleBackground($: EngineInterface, text: string): Promise<void>
     const results = task.p ? await outcomes($, task.p, ok, undefined) : []
     if (task.p) await finishGit($, task.p, results)
     if (showReads) queuedReads.push(...task.reads)
-    scheduleScan($, { ...task.job, actions: proven(task.p, results) })
+    scheduleScan($, { ...task.job, actions: proven(task.p, results, task.cwd) })
   }
 }
 
@@ -638,12 +649,19 @@ async function gitPaths($: EngineInterface, root: string, prefix: string, commit
   const map = mapper(root, prefix)
   try {
     const run = committed
-      ? await git($, root, ['diff-tree', '--root', '--no-commit-id', '--name-only', '-r', '-z', 'HEAD'], 5_000)
-      : await git($, root, ['diff', '--cached', '--name-only', '-z'], 5_000)
+      ? await git($, root, ['diff-tree', '--root', '--no-commit-id', '--name-only', '-r', '-z', 'HEAD', '--', '.'], 5_000)
+      : await git($, root, ['diff', '--cached', '--name-only', '-z', '--', '.'], 5_000)
     return run.exitCode === 0 ? run.stdout.split('\0').filter(Boolean).flatMap(rel => map(rel) ?? []) : []
   } catch {
     return []
   }
+}
+
+// Outside a repo the cwd's own .git is watched, so a git init there is seen as it lands.
+async function gitWatch($: EngineInterface, cwd: string): Promise<string[]> {
+  const gd = (await gitDir($, cwd)) || join(cwd, '.git')
+  gitWatched = [join(gd, 'index'), join(gd, 'HEAD')]
+  return gitWatched
 }
 
 async function gitDir($: EngineInterface, cwd: string): Promise<string> {
@@ -670,6 +688,7 @@ async function sync($: EngineInterface, force = false): Promise<void> {
   if (!force && now - lastSync < 2_000) return
   lastSync = now
   searchIndex = null
+  if (!themePoll) await loadTheme($)
   const t = await get($)
   if (!t.root) return
   await loadDirs($, [t.root, ...openDirs(t)])
@@ -752,7 +771,11 @@ async function afterBash($: EngineInterface, jobs: Job[]): Promise<void> {
     const final = await get($)
     const committed = actions.some(a => a.verb === 'commit')
     if ((committed || actions.some(a => a.verb === 'add')) && final.top) {
-      const paths = (await gitPaths($, final.root, final.prefix, committed)).filter(x => !underAny(x, ignored, final.root)).slice(0, READ_REVEAL_LIMIT)
+      // A commit shows what it committed; an add shows what it named, or all that is staged.
+      const named = committed ? null : actions.filter(a => a.verb === 'add').some(a => !a.paths) ? null : actions.flatMap(a => a.paths ?? [])
+      const paths = (await gitPaths($, final.root, final.prefix, committed))
+        .filter(x => !underAny(x, ignored, final.root) && (!named || named.some(n => x === n || inside(n, x))))
+        .slice(0, READ_REVEAL_LIMIT)
       await revealPaths($, paths)
       const shown = new Set((await get($)).nodes.map(n => n.id))
       for (const x of paths) if (shown.has(x)) tones[x] = 'green'
@@ -1025,15 +1048,93 @@ async function openNode($: EngineInterface, n: FileNode): Promise<void> {
   else await openFile($, n.id)
 }
 
+// The built-in search tools read like rg and find do: the files they list shimmer purple.
+// Grep in content mode lists no filenames, so its lines' path prefixes stand in.
+async function searched($: EngineInterface, e: { tool: string }, next: (e: { tool: string }) => Promise<ResultOf['tool.call']>): Promise<ResultOf['tool.call']> {
+  if ((e.tool !== 'Grep' && e.tool !== 'Glob') || !showReads) return next(e)
+  const result = await next(e)
+  if (result.deny || result.isError || !result.result || typeof result.result !== 'object') return result
+  const out = result.result as { filenames?: unknown; content?: unknown }
+  const names = Array.isArray(out.filenames) ? out.filenames.filter((x): x is string => typeof x === 'string') : []
+  if (!names.length && typeof out.content === 'string')
+    for (const line of out.content.split('\n').slice(0, 400)) {
+      const path = posix(line).match(drivesOn() ? /^((?:[A-Za-z]:)?[^:\0]+?):\d+[:-]/ : /^([^:\0]+?):\d+[:-]/)?.[1]
+      if (path) names.push(path)
+    }
+  if (!names.length) return result
+  const cwd = await cwdOf($)
+  queuedReads.push(...[...new Set(names.map(n => resolve(cwd, n, home)))].slice(0, 60))
+  scheduleScan($, { actions: [], since: await sinceNow($, false), initRepo: false, readOnly: true })
+  return result
+}
+
+// What rows.tsx draws for a row, serialized: a row box, a Text per segment, and a Text per
+// character while a segment shimmers. Measured at about 160 + 70 a segment + its text,
+// with the text counted as JSON escapes it.
+function drawnSize(r: RowSpec): number {
+  let n = 160
+  for (const s of [...r.left, ...r.right]) n += s.sh && !s.one ? [...s.t].reduce((a, ch) => a + 78 + JSON.stringify(ch).length, 40) : 68 + JSON.stringify(s.t).length
+  return n
+}
+
+// The desktop draws every row, so a big open tree is cut to RENDER_CHARS drawn: the rows
+// centred on the cursor, with a note above and below saying how many were left out.
+function capRows(specs: RowSpec[], at: number, note: (text: string) => RowSpec): void {
+  const size = specs.map(drawnSize)
+  if (size.reduce((a, b) => a + b, 0) <= RENDER_CHARS) return
+  const budget = RENDER_CHARS - 2 * drawnSize(note(`  ⋮ ${specs.length.toLocaleString('en')} more rows; search to find the rest`))
+  let from = Math.min(Math.max(0, at), specs.length - 1)
+  let to = from + 1
+  let used = size[from]!
+  for (let grew = true; grew; ) {
+    grew = false
+    if (to < specs.length && used + size[to]! <= budget) {
+      used += size[to++]!
+      grew = true
+    }
+    if (from > 0 && used + size[from - 1]! <= budget) {
+      used += size[--from]!
+      grew = true
+    }
+  }
+  const kept = specs.slice(from, to)
+  const above = from
+  const below = specs.length - to
+  specs.length = 0
+  if (above) specs.push(note(`  ⋮ ${above.toLocaleString('en')} rows above`))
+  specs.push(...kept)
+  if (below) specs.push(note(`  ⋮ ${below.toLocaleString('en')} more rows; search to find the rest`))
+}
+
+// The longest run of whole lines whose JSON form stays within RENDER_CHARS. loadPreview
+// already cuts each line to 2,000 characters, so the first line always fits.
+function cutLines(text: string): string {
+  if (JSON.stringify(text).length <= RENDER_CHARS) return text
+  let used = 2
+  let end = 0
+  for (const line of text.split('\n')) {
+    const cost = JSON.stringify(line).length
+    if (used + cost > RENDER_CHARS) break
+    used += cost
+    end += line.length + 1
+  }
+  return text.slice(0, end)
+}
+
+// A theme found starts the poll and a theme gone stops it, so a theme installed mid-session
+// is followed from the next resync, and a session without one polls nothing.
 async function loadTheme($: EngineInterface): Promise<void> {
   const path = `${(await $.env.get('HOME')) ?? ''}/${THEME_FILE}`
   try {
     const stat = await $.fs.stat(path)
     if (stat.kind !== 'file') throw new Error('no theme file')
+    themePoll ??= $.clock.every(THEME_POLL_MS, () => void loadTheme($))
     if (stat.mtimeMs === themeMtime) return
     await $.state.set(THEME, parseTheme(String(await $.fs.read(path))))
     themeMtime = stat.mtimeMs
   } catch {
+    themePoll?.cancel()
+    themePoll = null
     if (themeMtime === 0) return
     await $.state.set(THEME, DEFAULT_THEME)
     themeMtime = 0
@@ -1091,9 +1192,9 @@ export const register: Register = (on, options) => {
       } catch {
         noNerd = true
       }
-      await loadTheme($)
       themePoll?.cancel()
-      themePoll = themeMtime ? $.clock.every(THEME_POLL_MS, () => void loadTheme($)) : null
+      themePoll = null
+      await loadTheme($)
       const t = await get($)
       if (t.flashOn) await patch($, () => ({ flash: [], flashDim: [], flashOn: false, flashTones: {} }))
       if (t.preview) await patch($, () => ({ preview: '', previewTop: 0 }))
@@ -1101,7 +1202,10 @@ export const register: Register = (on, options) => {
       await update($, CLAUDE, cur => (cur?.now?.state === 'running' ? { ...cur, now: { ...cur.now, state: 'failed' as const }, touched: cur.touched.filter(x => x.state !== 'reading' && x.state !== 'editing') } : (cur ?? { now: null, touched: [] })))
       const cwd = await cwdOf($)
       if (!t.root || t.nodes.length === 0 || t.root !== cwd) await reset($, cwd)
-      else if (!noDock) await $.ui.open({ id: PANE, title: `Files: ${t.root.split('/').pop() || t.root}` })
+      else if (!noDock) {
+        autoDock = true
+        await $.ui.open({ id: PANE, title: `Files: ${t.root.split('/').pop() || t.root}` })
+      }
     })()
     return next(e)
   })
@@ -1111,7 +1215,7 @@ export const register: Register = (on, options) => {
     // reports no fullscreen layout, so a session no terminal draws skips them.
     const terminal = await $.session.surfaces().then(s => s.includes('terminal'), () => true)
     if (terminal && !e.presentation.isFullscreen) return { text: 'filetree shows in the sidebar, which needs the fullscreen layout. Run /tui fullscreen, then /filetree.' }
-    if (terminal && e.presentation.columns < 110) return { text: 'filetree shows in the sidebar, which needs a terminal at least 110 columns wide. Widen it, then run /filetree.' }
+    if (terminal && e.presentation.columns < MIN_COLUMNS) return { text: 'filetree shows in the sidebar, which needs a terminal at least 110 columns wide. Widen it, then run /filetree.' }
     noDock = false
     const cwd = await cwdOf($)
     await reset($, cwd, true)
@@ -1162,12 +1266,12 @@ export const register: Register = (on, options) => {
       const out: Partial<BuiltinToolResults['Bash']> = !result.isError && result.result && typeof result.result === 'object' ? result.result : {}
       const reads = showReads ? readTargets(command, cwd, typeof out.stdout === 'string' ? out.stdout : '', home) : []
       const job: Job = { actions: [], since, initRepo: actions.some(a => a.init), readOnly: quiet || result.isReadOnly === true }
-      if (out.backgroundTaskId) background.set(out.backgroundTaskId, { p: pending, job, reads })
+      if (out.backgroundTaskId) background.set(out.backgroundTaskId, { p: pending, job, reads, cwd })
       else void (async () => {
         const results = pending ? await outcomes($, pending, !result.isError, out.gitOperation) : []
         if (pending) await finishGit($, pending, results)
         queuedReads.push(...reads)
-        scheduleScan($, { ...job, actions: proven(pending, results) })
+        scheduleScan($, { ...job, actions: proven(pending, results, cwd) })
       })()
       if (/(^|[;&|\s])(cd|pushd|popd)(\s|$)/.test(command)) $.clock.after(400, () => void followCwd($))
     } else if (file) void touched($, [file], 'orange', showWrites)
@@ -1191,6 +1295,9 @@ export const register: Register = (on, options) => {
     if (ok) void touched($, [file], 'purple', true)
     return result
   })
+
+  on('tool.call', { tool: 'Grep' }, searched)
+  on('tool.call', { tool: 'Glob' }, searched)
 
   on('ui.message', async ($, e, next) => {
     if (e.requestId !== PANE || e.element !== 'rows' || !e.data || typeof e.data !== 'object') return next(e)
@@ -1255,19 +1362,29 @@ export const register: Register = (on, options) => {
         if (t.root !== root || t.nodes.length === 0) await reset($, root)
       })()
     }
-    const gd = await gitDir($, posix(e.cwd))
-    return gd ? { ...result, watchPaths: [...(result.watchPaths ?? []), join(gd, 'index'), join(gd, 'HEAD')] } : result
+    return { ...result, watchPaths: [...(result.watchPaths ?? []), ...(await gitWatch($, posix(e.cwd)))] }
   })
 
   on('classic.CwdChanged', async ($, e, next) => {
     const result = await next(e)
     void followCwd($)
-    return result
+    return { ...result, watchPaths: [...(result.watchPaths ?? []), ...(await gitWatch($, posix(e.new_cwd)))] }
   })
 
+  // Only the cwd's own index and HEAD count, and a burst of changes, as a commit makes,
+  // settles into one resync 300 ms after the last.
   on('classic.FileChanged', async ($, e, next) => {
     const result = await next(e)
-    if (/[\\/]\.git[\\/]|[\\/](index|HEAD)$/.test(e.file_path)) $.clock.after(300, () => void sync($, true))
+    if (gitWatched.includes(posix(e.file_path))) {
+      gitSettle?.cancel()
+      gitSettle = $.clock.after(300, () => {
+        gitSettle = null
+        void (async () => {
+          if (!(await get($)).top) await detectRepo($)
+          await sync($, true)
+        })()
+      })
+    }
     return result
   })
 
@@ -1331,7 +1448,10 @@ export const register: Register = (on, options) => {
 
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e, next) => {
     if (e.surface !== 'terminal' && e.surface !== 'desktop') return next(e)
-    if (e.surface === 'terminal' && e.props.placement === 'inline') {
+    const vp = e.viewport
+    const cramped = e.surface === 'terminal' && autoDock && vp !== undefined && (vp.isFullscreen === false || vp.columns < MIN_COLUMNS)
+    if (e.surface === 'terminal' && vp !== undefined) autoDock = false
+    if (e.surface === 'terminal' && (e.props.placement === 'inline' || cramped)) {
       noDock = true
       void $.ui.close({ id: PANE }).catch(() => undefined)
       const { Box: Empty } = $.ui.resolve(e)
@@ -1360,8 +1480,8 @@ export const register: Register = (on, options) => {
         // The desktop page refuses a Code or Markdown drawn inside a Client, so the preview is
         // the pane's own tree there; the app scrolls it natively.
         const whole = p?.text ?? ''
-        const cut = whole.length > RENDER_CHARS ? whole.slice(0, whole.lastIndexOf('\n', RENDER_CHARS) + 1 || RENDER_CHARS) : whole
-        const shownLines = cut.split('\n').length
+        const cut = cutLines(whole)
+        const shownLines = cut.split('\n').length - (cut.endsWith('\n') ? 1 : 0)
         const note = [p?.note ?? '', cut.length < whole.length ? `first ${shownLines.toLocaleString('en')} of ${whole.split('\n').length.toLocaleString('en')} lines; Open in app shows the rest` : ''].filter(Boolean).join(' · ')
         const path = t.preview
         const actions = { back: () => void closePreview($), external: () => void openFile($, path, true) }
@@ -1376,7 +1496,7 @@ export const register: Register = (on, options) => {
             <Box flexShrink={1} flexGrow={1}>
               <Text bold wrap="truncate-start">{name}</Text>
             </Box>
-            <Button key="external" plain dimColor label={unicode ? '↗' : '\u{f08e}'} onPress={() => void openFile($, t.preview, true)} />
+            <Button key="external" plain dimColor label="Open in app ↗" onPress={() => void openFile($, t.preview, true)} />
           </Box>
           {p?.note ? <Text dimColor>{p.note}</Text> : null}
           <Client
@@ -1487,6 +1607,7 @@ export const register: Register = (on, options) => {
       ...(pinned.length > 0 ? [note('  ⋮')] : []),
       ...shown.map(rowSpec),
     ]
+    if (nativeScroll) capRows(specs, Math.max(0, specs.findIndex(s => s.id === t.cursor)), note)
     const barSize = Math.max(1, Math.round((specs.length * shown.length) / Math.max(1, rows.length)))
     const bar =
       !nativeScroll && rows.length > shown.length + pinned.length

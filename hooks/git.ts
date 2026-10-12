@@ -8,6 +8,8 @@ export type GitAction = {
   tone: string
   icon: { nerd: string; plain: string }
   init?: boolean
+  // What `git add` named, or absent when it stages everything (`.`, -A, -u or a glob).
+  paths?: string[]
 }
 
 const ICON = {
@@ -156,6 +158,12 @@ export function chainOf(command: string): { size: number; and: boolean } {
   return { size, and: seps.every(s => s === '&&') }
 }
 
+function addPaths(rest: string[]): { paths?: string[] } {
+  if (rest.some(t => /^(-A|--all|-u|--update|--pathspec-from-file.*)$/.test(t))) return {}
+  const named = rest.filter(t => !t.startsWith('-')).map(t => t.replace(/^["']|["']$/g, ''))
+  return named.length && !named.some(t => t === '.' || /[*?[]/.test(t)) ? { paths: named } : {}
+}
+
 export function gitActions(command: string): GitAction[] {
   const out: GitAction[] = []
   for (const raw of segments(command)) {
@@ -167,7 +175,7 @@ export function gitActions(command: string): GitAction[] {
       const rest = tokens.slice(i + 1)
       if (gitReadOnly(verb, rest)) continue
       const spec = verb === 'checkout' && rest.includes('--') ? GIT_VERBS.restore : GIT_VERBS[verb]
-      if (spec) out.push({ kind: `git ${verb}`, ...spec })
+      if (spec) out.push({ kind: `git ${verb}`, ...spec, ...(verb === 'add' ? addPaths(rest) : {}) })
     } else if (head === 'gh') {
       const pair = `${tokens[1] ?? ''} ${tokens[2] ?? ''}`
       const spec = GH_VERBS[pair]

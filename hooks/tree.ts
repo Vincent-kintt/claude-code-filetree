@@ -184,7 +184,7 @@ export function parseGit(stdout: string, root: string, prefix: string): GitStatu
         ? '?'
         : /U/.test(xy) || xy === 'AA' || xy === 'DD'
           ? 'U'
-          : (['D', 'M', 'R', 'C', 'A', 'T'].find(c => xy.includes(c)) ?? '')
+          : (['D', 'M', 'T', 'R', 'C', 'A'].find(c => xy.includes(c)) ?? '')
     if (!letter) continue
     git[path] = stronger(git[path], letter)
     let dir = dirname(path)
