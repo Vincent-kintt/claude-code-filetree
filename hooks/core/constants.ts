@@ -24,16 +24,6 @@ export const READ_REVEAL_LIMIT = 12
 export const ACTIVITY_TTL_MS = 45_000
 export const ADD_COLOR = '#98c379'
 export const DEL_COLOR = '#e06c75'
-export const THEME_FILE = '.local/state/omarchy/current/theme/colors.toml'
-export const THEME_POLL_MS = 2000
-export const FONT_SCRIPT =
-  'if command -v fc-list >/dev/null 2>&1; then f=$(fc-list ":charset=$1" file | head -n1 | cut -d: -f1); ' +
-  'else f=$(ls "$HOME"/Library/Fonts/*Nerd* /Library/Fonts/*Nerd* 2>/dev/null | head -n1); fi; ' +
-  '[ -n "$f" ] || { echo missing; exit 0; }; m=$(stat -c %Z "$f" 2>/dev/null || stat -f %c "$f"); p=$PPID; ' +
-  'while [ -n "$p" ] && [ "$p" -gt 1 ]; do c=$(ps -o comm= -p "$p" 2>/dev/null); c=$(basename "$c" 2>/dev/null | tr -d " "); case "$c" in ' +
-  'ghostty|kitty|alacritty|Alacritty|foot|footclient|wezterm-gui|konsole|gnome-terminal-|xterm|urxvt|st|Terminal|iTerm2) ' +
-  'e=$(ps -o etime= -p "$p" 2>/dev/null | awk -F\'[-:]\' \'{n=NF; s=$n+60*$(n-1); if (n>2) s+=3600*$(n-2); if (n>3) s+=86400*$(n-3); print s}\'); [ -n "$e" ] && [ $(( $(date +%s) - e )) -lt "$m" ] && echo stale || echo ok; exit 0;; esac; ' +
-  'p=$(ps -o ppid= -p "$p" 2>/dev/null | tr -d " "); done; echo ok'
 export const PRUNE = ['.git', 'node_modules', 'target', '.venv', '__pycache__', 'dist', '.next']
 export const HOME_PRUNE = ['Library', 'AppData', '.Trash']
 export const SIZE_TIMEOUT_MS = 15_000
