@@ -1,7 +1,8 @@
 import type { FileNode, FileTree } from '../../../types'
-import { DOUBLE_MS } from '../../core/constants'
 import type { OS } from '../../core/types'
 import { dirname, inside } from '../../core/paths'
+
+export const DOUBLE_MS = 450
 
 export const LINUX_LAUNCH = 'setsid -f -w "$@" </dev/null >/dev/null 2>&1 & p=$!; sleep 1; kill -0 "$p" 2>/dev/null && exit 0; wait "$p"'
 

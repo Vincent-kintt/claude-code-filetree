@@ -1,11 +1,23 @@
 import type { Activity, FileTree, Theme } from '../../../types'
-import { ACTIVITY_TTL_MS, ADD_COLOR, BRANCH_ROW, DATE_MIN_COLUMNS, DEL_COLOR, RENDER_CHARS, RUNNING_MAX_MS, SHIMMER, SHIMMER_DESKTOP } from '../../core/constants'
+import { ACTIVITY_TTL_MS, BRANCH_ROW, RENDER_CHARS } from '../../core/constants'
 import { shortPath } from '../../core/platform'
 import { CHEVRON_CLOSED, CHEVRON_OPEN, fileIcon, GIT_COLOR } from '../../ui/icons'
 import type { RowSpec, RowsProps, Seg } from '../../ui/rows'
 import { dirname, inside, underAny } from '../../core/paths'
 import { formatSize } from '../sizes/model'
 import { type Row, rowsOf } from './nodes'
+import { TONES } from '../../ui/tones'
+
+// Below this many columns the date column is hidden, so the names get the room (TRE-08).
+export const DATE_MIN_COLUMNS = 40
+export const SHIMMER = Object.fromEntries(Object.entries(TONES).map(([k, v]) => [k, { bright: v.bright, dim: v.dim }]))
+// The desktop app may be light or dark and says neither, so its shimmer peaks on a deep
+// shade rather than the near-white the terminal's dark background takes.
+export const DEEP: Record<string, string> = { orange: '#c2410c', green: '#15803d', teal: '#0f766e', blue: '#1d4ed8', purple: '#7e22ce', cyan: '#0e7490', red: '#b91c1c' }
+export const SHIMMER_DESKTOP = Object.fromEntries(Object.entries(TONES).map(([k, v]) => [k, { bright: [v.bright[0] ?? v.solid, v.bright[1] ?? v.solid, v.bright[0] ?? v.solid, DEEP[k] ?? v.solid], dim: v.dim }]))
+export const RUNNING_MAX_MS = 600_000
+export const ADD_COLOR = '#98c379'
+export const DEL_COLOR = '#e06c75'
 
 export type RowColors = Pick<RowsProps, 'activeBg' | 'hoverBg' | 'tones'>
 export type Bar = NonNullable<RowsProps['bar']>

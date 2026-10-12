@@ -1,9 +1,11 @@
 import type { BuiltinToolResults } from 'claude-code'
 import type { Activity, FileNode, Now } from '../../../types'
-import { ACTIVITY_TTL_MS, FIND_LIMIT, READ_REVEAL_LIMIT } from '../../core/constants'
+import { ACTIVITY_TTL_MS, READ_REVEAL_LIMIT } from '../../core/constants'
 import type { GitOperation, Job, Outcome, Pending, Since } from '../../core/types'
 import { chainOf, type GitAction } from './commands'
 import { dirname, inside, resolve, underAny } from '../../core/paths'
+
+export const FIND_LIMIT = 200
 
 export const PROOF: Record<string, (op: GitOperation) => boolean> = {
   push: op => Boolean(op.push),

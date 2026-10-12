@@ -1,7 +1,9 @@
 import type { ClaudeLog, FileTree, Now, Touch } from '../../../types'
-import { BRANCH_ROW, TOUCH_KEEP } from '../../core/constants'
+import { BRANCH_ROW } from '../../core/constants'
 import { ancestorsOf, posix } from '../../core/paths'
 import { visibleRows } from '../tree/nodes'
+
+export const TOUCH_KEEP = 40
 
 /** Where the view sits when the tree grows: following Claude drops the scroll, else the top row stays put. */
 export function keepTop(cur: FileTree, expanded: string[], followClaude: boolean, from: number): Partial<FileTree> {

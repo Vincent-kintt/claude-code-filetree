@@ -1,9 +1,10 @@
 import type { Activity, ClaudeLog, FileTree, Now } from '../../../types'
-import { TOUCH_SHOWN } from '../../core/constants'
 import { shortPath } from '../../core/platform'
 import type { Card, DesktopModel } from './view'
 import { dirname, inside } from '../../core/paths'
 import { relPath } from '../tree/model'
+
+export const TOUCH_SHOWN = 8
 
 /** The desktop card: what Claude is doing, else the last thing it did, a git action or a file. */
 export function cardOf(now: Now | null, git: Activity | undefined, where: (p: string) => string): Card {
