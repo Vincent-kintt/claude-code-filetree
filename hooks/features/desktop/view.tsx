@@ -3,7 +3,6 @@ import type { Elements, RenderChildren } from 'claude-code'
 import type { Touch } from '../../../types'
 import { TONES } from '../../ui/tones'
 import { GIT_COLOR } from '../../ui/icons'
-import { VERSION } from '../../version'
 
 export type Icon = 'eye' | 'pencil' | 'check' | 'git' | 'x' | 'idle'
 export type Card = { tone: string; phase: string; title: string; sub: string; icon: Icon; live: boolean }
@@ -90,7 +89,7 @@ export function desktopPane(el: Elements['desktop'], m: DesktopModel, act: Deskt
     [GIT_COLOR.M ?? '#e5c07b', 'Not committed'],
   ]
   return (
-    <Box flexDirection="column" gap={1} paddingX={1} paddingY={1}>
+    <Box flexDirection="column" gap={2} paddingX={1} paddingY={1}>
       <Box key="card" flexDirection="column" borderStyle="round" borderColor={c.live ? color : 'subtle'} paddingX={2} paddingY={1}>
         <Box flexDirection="row" gap={2} alignItems="center">
           <Svg source={iconSvg(c.icon, color)} alt={c.title} width={48} height={48} />
@@ -108,44 +107,48 @@ export function desktopPane(el: Elements['desktop'], m: DesktopModel, act: Deskt
             ) : null}
           </Box>
         </Box>
-        <Box flexDirection="row" flexWrap="wrap" columnGap={1} marginTop={1}>
-          {m.branch ? (
-            // A long branch shrinks: the upstream gives way first, then the branch name ends in an ellipsis.
-            <Box flexDirection="row" flexShrink={1} minWidth={0}>
-              <Text color={toneColor('blue')}>⑂ </Text>
-              <Text bold wrap="truncate-end">
-                {m.branch.head}
-              </Text>
-              {m.branch.ahead > 0 && <Text color={toneColor('teal')}>{` ↑${m.branch.ahead}`}</Text>}
-              {m.branch.behind > 0 && <Text color={toneColor('blue')}>{` ↓${m.branch.behind}`}</Text>}
-              {m.branch.upstream ? (
-                <Box flexShrink={100} minWidth={0}>
-                  <Text color={m.muted} wrap="truncate-end">{` ${m.branch.upstream}`}</Text>
-                </Box>
-              ) : null}
+        {m.branch || m.summary.text ? (
+          <Box flexDirection="row" flexWrap="wrap" columnGap={1} marginTop={1}>
+            {m.branch ? (
+              // A long branch shrinks: the upstream gives way first, then the branch name ends in an ellipsis.
+              <Box flexDirection="row" flexShrink={1} minWidth={0}>
+                <Text color={toneColor('blue')}>⑂ </Text>
+                <Text bold wrap="truncate-end">
+                  {m.branch.head}
+                </Text>
+                {m.branch.ahead > 0 && <Text color={toneColor('teal')}>{` ↑${m.branch.ahead}`}</Text>}
+                {m.branch.behind > 0 && <Text color={toneColor('blue')}>{` ↓${m.branch.behind}`}</Text>}
+                {m.branch.upstream ? (
+                  <Box flexShrink={100} minWidth={0}>
+                    <Text color={m.muted} wrap="truncate-end">{` ${m.branch.upstream}`}</Text>
+                  </Box>
+                ) : null}
+              </Box>
+            ) : null}
+            <Box flexGrow={1} />
+            {/* Never shrinks: when the branch line has no room, the summary wraps whole onto the next line. */}
+            <Box flexDirection="row" flexShrink={0}>
+              <Text color={m.muted}>{m.summary.text}</Text>
+              {m.summary.add > 0 && <Text color={ADD}>{` +${m.summary.add}`}</Text>}
+              {m.summary.del > 0 && <Text color={DEL}>{` -${m.summary.del}`}</Text>}
             </Box>
-          ) : (
-            <Text color={m.muted}>{m.noRepo ? 'no git repo' : ''}</Text>
-          )}
-          <Box flexGrow={1} />
-          {/* Never shrinks: when the branch line has no room, the summary wraps whole onto the next line. */}
-          <Box flexDirection="row" flexShrink={0}>
-            <Text color={m.muted}>{m.summary.text}</Text>
-            {m.summary.add > 0 && <Text color={ADD}>{` +${m.summary.add}`}</Text>}
-            {m.summary.del > 0 && <Text color={DEL}>{` -${m.summary.del}`}</Text>}
           </Box>
-        </Box>
-        <Box flexDirection="row" flexWrap="wrap" columnGap={2}>
-          {legend.map(([dot, label]) => (
-            <Box flexDirection="row">
-              <Text color={dot}>● </Text>
-              <Text color={m.muted}>{label}</Text>
-            </Box>
-          ))}
-        </Box>
+        ) : null}
+        {m.touched.length > 0 ? (
+          <Box flexDirection="row" flexWrap="wrap" columnGap={2} marginTop={1}>
+            {legend.map(([dot, label]) => (
+              <Box flexDirection="row">
+                <Text color={dot}>● </Text>
+                <Text color={m.muted}>{label}</Text>
+              </Box>
+            ))}
+          </Box>
+        ) : null}
       </Box>
 
-      <Input key="q" placeholder="Find a file" autoFocus value={m.query} onInput={(v: string) => act.search(v)} onSubmit={(v: string) => act.jump(v)} />
+      <Box flexDirection="column" flexGrow={1}>
+        <Input key="q" placeholder="Find a file" autoFocus value={m.query} onInput={(v: string) => act.search(v)} onSubmit={(v: string) => act.jump(v)} />
+      </Box>
 
       <Box key="touched" flexDirection="column" borderStyle="round" borderColor="subtle" paddingX={2} paddingY={1}>
         <Box flexDirection="row" columnGap={1}>
@@ -212,16 +215,9 @@ export function desktopPane(el: Elements['desktop'], m: DesktopModel, act: Deskt
             </Text>
           </Box>
         </Box>
-        {m.noRepo ? <Text color={m.muted}>git status starts after git init</Text> : null}
         {m.view === 'edited' && m.edited === 0 ? <Text color={m.muted}>{m.noRepo ? 'Edited files need a git repo' : 'Nothing edited, added or removed since the last commit'}</Text> : null}
         {tree}
-        {m.selected ? (
-          <Text dimColor wrap="truncate-start">
-            selected: {m.selected}
-          </Text>
-        ) : null}
       </Box>
-      <Text dimColor>{`filetree ${VERSION}`}</Text>
     </Box>
   )
 }
